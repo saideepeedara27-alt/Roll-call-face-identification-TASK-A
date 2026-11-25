@@ -101,7 +101,7 @@ Then open **`http://127.0.0.1:8000/`** in your browser.
 ### Demo Mode (Bundled Practice Dataset)
 Click **`Demo Mode`** in the top bar (or on the empty canvas) to run the real YuNet + SFace pipeline on the bundled practice set in `data/practice/` (`6` reference portraits + `demo_office_group.jpg`). Because two practice portraits have background bystanders, Demo Mode explicitly notes:
 
-> `Demo: dominant face auto-selected for 2 photos`
+> `Demo: dominant face auto-selected for 1 photo`
 
 ### Group Photo Analysis & Second Look
 1. Click **`Upload Group Photo`** (or drag & drop a `.jpg`, `.jpeg`, `.png`, `.bmp`, or `.webp` image onto the canvas stage).

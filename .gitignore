@@ -34,3 +34,8 @@ exports/
 .vscode/
 .idea/
 *.log
+
+# Local agent skill installs and Archify temporary build artifacts
+.agents/
+.archify/
+skills-lock.json
