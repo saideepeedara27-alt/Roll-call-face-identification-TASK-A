@@ -495,6 +495,7 @@ function loadSessionIntoUI(data) {
     "btn-toggle-map",
     "btn-export-png",
     "btn-export-csv",
+    "btn-print-sheet",
   ].forEach((id) => {
     el(id).disabled = false;
   });
@@ -1233,7 +1234,7 @@ function bindEvents() {
       el("pending-attention-banner").classList.add("hidden");
       el("demo-note-banner").classList.add("hidden");
       el("warning-dot").classList.add("hidden");
-      ["btn-second-look", "btn-draw-box", "btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-toggle-map", "btn-export-png", "btn-export-csv"].forEach(
+      ["btn-second-look", "btn-draw-box", "btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-toggle-map", "btn-export-png", "btn-export-csv", "btn-print-sheet"].forEach(
         (id) => { el(id).disabled = true; }
       );
       el("coverage-map-card").classList.add("hidden");
@@ -1316,6 +1317,9 @@ function bindEvents() {
   });
   el("btn-export-csv").addEventListener("click", () => {
     if (state.session) window.location.href = `/api/sessions/${state.session.session_id}/export/csv`;
+  });
+  el("btn-print-sheet").addEventListener("click", () => {
+    if (state.session) window.open(`/api/sessions/${state.session.session_id}/export/print`, "_blank", "noopener");
   });
 
   // Zoom & Pan

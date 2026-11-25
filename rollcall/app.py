@@ -12,7 +12,7 @@ import uuid
 import numpy as np
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psutil
@@ -32,7 +32,11 @@ from rollcall.enrollment import (
     is_system_file,
     render_thumbnail_b64,
 )
-from rollcall.exporter import build_attendance_csv, render_annotated_png
+from rollcall.exporter import (
+    build_attendance_csv,
+    build_print_attendance_html,
+    render_annotated_png,
+)
 from rollcall.filename_parser import parse_identity_filename
 from rollcall.image_utils import (
     ImageLoadError,
@@ -474,6 +478,7 @@ def _identify_group_image(
     filename: str,
     raw_bytes: bytes,
     thresholds: RecognitionThresholds,
+    is_demo: bool = False,
 ) -> dict:
     """Synchronous worker to run detection, quality gating, and matching on a group photo."""
     import time
@@ -547,6 +552,7 @@ def _identify_group_image(
         "calibration": calibration.to_dict(),
         "thresholds": effective_thresholds,
         "lookalike_pairs": calibration.flagged_pair_set(),
+        "is_demo": is_demo,
         "undo_stack": [],
     }
     state.store_session(session_id, session_obj)
@@ -1415,6 +1421,20 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             headers={"Content-Disposition": f'attachment; filename="rollcall_{stem}_attendance.csv"'},
         )
 
+    @app.get("/api/sessions/{session_id}/export/print")
+    def export_print_sheet(session_id: str, include_thumbs: bool = False):
+        with state.lock:
+            session_obj = state.sessions.get(session_id)
+        if session_obj is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        resp = _build_session_response(state=state, session_obj=session_obj)
+        html_doc = build_print_attendance_html(
+            resp,
+            is_demo=bool(session_obj.get("is_demo", False)),
+            include_thumbs=include_thumbs,
+        )
+        return HTMLResponse(content=html_doc)
+
     @app.post("/api/demo")
     async def run_demo_mode():
         _require_engine(state)
@@ -1469,6 +1489,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             group_path.name,
             group_bytes,
             DEFAULT_THRESHOLDS,
+            True,
         )
         identify_result["demo_enrollment"] = enroll_summary
         if demo_note:
