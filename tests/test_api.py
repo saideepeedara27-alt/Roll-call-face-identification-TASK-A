@@ -109,14 +109,15 @@ def test_health_enroll_identify_correct_export_and_wipe(tmp_path):
 
     session_id = data["session_id"]
 
-    # 4. Human-in-the-loop: enroll the unknown face locally
+    # 4. Human-in-the-loop: assign unknown face to enrolled Priya Sharma (does not mutate embeddings)
     corr = client.post(
         f"/api/sessions/{session_id}/correct",
-        json={"face_index": 1, "action": "enroll_new", "new_display_name": "Arjun Mehta"},
+        json={"face_index": 1, "action": "assign", "identity_id": "priya_sharma", "reason_note": "Side angle"},
     )
     assert corr.status_code == 200
-    assert corr.json()["summary"]["confirmed"] == 2
-    assert corr.json()["summary"]["enrolled_total"] == 2
+    assert corr.json()["summary"]["confirmed"] == 1
+    assert corr.json()["summary"]["confirmed_by_reviewer"] == 1
+    assert corr.json()["summary"]["enrolled_total"] == 1
 
     # 5. Export PNG and CSV
     png_resp = client.get(f"/api/sessions/{session_id}/export/png")
@@ -127,12 +128,13 @@ def test_health_enroll_identify_correct_export_and_wipe(tmp_path):
     csv_resp = client.get(f"/api/sessions/{session_id}/export/csv")
     assert csv_resp.status_code == 200
     assert "Priya Sharma" in csv_resp.text
-    assert "Arjun Mehta" in csv_resp.text
+    assert "Confirmed by reviewer" in csv_resp.text
 
-    # 6. Wipe All Data clears everything
+    # 6. Wipe All Data clears everything including decision trail
     wipe = client.post("/api/wipe")
     assert wipe.status_code == 200
-    assert wipe.json()["deleted"]["identities"] == 2
+    assert wipe.json()["deleted"]["identities"] == 1
+    assert wipe.json()["deleted"]["decision_trail"] >= 3
     assert client.get("/api/identities").json()["identities"] == []
 
 

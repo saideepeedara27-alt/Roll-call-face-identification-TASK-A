@@ -81,6 +81,24 @@ class RollCallDB:
                     action TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS decision_trail (
+                    trail_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    group_image_sha256 TEXT NOT NULL,
+                    face_index INTEGER NOT NULL,
+                    face_bbox TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    previous_status TEXT,
+                    previous_identity_id TEXT,
+                    previous_display_name TEXT,
+                    new_status TEXT NOT NULL,
+                    new_identity_id TEXT,
+                    new_display_name TEXT NOT NULL,
+                    reason_note TEXT,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -267,15 +285,104 @@ class RollCallDB:
                 ),
             )
 
+    def append_trail_entry(
+        self,
+        session_id: str,
+        group_image_sha256: str,
+        face_index: int,
+        face_bbox: list[int],
+        actor: str,
+        action: str,
+        previous_status: str | None,
+        previous_identity_id: str | None,
+        previous_display_name: str | None,
+        new_status: str,
+        new_identity_id: str | None,
+        new_display_name: str,
+        reason_note: str | None = None,
+    ) -> dict:
+        created_at = _utc_now()
+        bbox_json = json.dumps(face_bbox)
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO decision_trail (
+                    session_id, group_image_sha256, face_index, face_bbox,
+                    actor, action, previous_status, previous_identity_id,
+                    previous_display_name, new_status, new_identity_id,
+                    new_display_name, reason_note, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING trail_id;
+                """,
+                (
+                    session_id,
+                    group_image_sha256,
+                    face_index,
+                    bbox_json,
+                    actor,
+                    action,
+                    previous_status,
+                    previous_identity_id,
+                    previous_display_name,
+                    new_status,
+                    new_identity_id,
+                    new_display_name,
+                    reason_note,
+                    created_at,
+                ),
+            )
+            trail_id = int(cur.fetchone()["trail_id"])
+        return {
+            "trail_id": trail_id,
+            "session_id": session_id,
+            "group_image_sha256": group_image_sha256,
+            "face_index": face_index,
+            "face_bbox": face_bbox,
+            "actor": actor,
+            "action": action,
+            "previous_status": previous_status,
+            "previous_identity_id": previous_identity_id,
+            "previous_display_name": previous_display_name,
+            "new_status": new_status,
+            "new_identity_id": new_identity_id,
+            "new_display_name": new_display_name,
+            "reason_note": reason_note,
+            "created_at": created_at,
+        }
+
+    def get_session_trail(self, session_id: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT trail_id, session_id, group_image_sha256, face_index, face_bbox,
+                       actor, action, previous_status, previous_identity_id,
+                       previous_display_name, new_status, new_identity_id,
+                       new_display_name, reason_note, created_at
+                FROM decision_trail
+                WHERE session_id = ?
+                ORDER BY trail_id ASC;
+                """,
+                (session_id,),
+            ).fetchall()
+            out = []
+            for r in rows:
+                item = dict(r)
+                item["face_bbox"] = json.loads(item["face_bbox"])
+                out.append(item)
+            return out
+
     def wipe_all_data(self) -> dict:
-        """Permanently delete all biometric embeddings, identities, and corrections."""
+        """Permanently delete all biometric embeddings, identities, and decision trail."""
         with self._connect() as conn:
             counts = {
                 "identities": conn.execute("SELECT COUNT(*) FROM identities;").fetchone()[0],
                 "reference_photos": conn.execute("SELECT COUNT(*) FROM reference_photos;").fetchone()[0],
                 "cached_embeddings": conn.execute("SELECT COUNT(*) FROM embedding_cache;").fetchone()[0],
                 "corrections": conn.execute("SELECT COUNT(*) FROM session_corrections;").fetchone()[0],
+                "decision_trail": conn.execute("SELECT COUNT(*) FROM decision_trail;").fetchone()[0],
             }
+            conn.execute("DELETE FROM decision_trail;")
             conn.execute("DELETE FROM session_corrections;")
             conn.execute("DELETE FROM reference_photos;")
             conn.execute("DELETE FROM identities;")

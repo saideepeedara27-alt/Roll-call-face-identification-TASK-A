@@ -117,25 +117,30 @@
 
       <div class="legend-bar" aria-label="Face status legend">
         <span class="legend-item"><span class="legend-swatch swatch-confirmed"></span>&#10003; Confirmed</span>
+        <span class="legend-item"><span class="legend-swatch swatch-reviewer"></span>&#10003;R Reviewer</span>
         <span class="legend-item"><span class="legend-swatch swatch-likely"></span>? Likely (Needs Review)</span>
         <span class="legend-item"><span class="legend-swatch swatch-unknown"></span>! unknown</span>
-        <span class="legend-hint">Tip: Click a box or use &uarr;/&darr; keys to inspect</span>
+        <span class="legend-hint">Keys: J/K next/prev &bull; R review queue &bull; C confirm &bull; A assign &bull; U unknown &bull; Z undo</span>
       </div>
     </section>
 
     <!-- Right Panel: Synchronized Face Results, Attendance & Explainability Inspector -->
     <aside class="inspector-pane" aria-label="Results and explainability inspector">
-      <div class="summary-grid" id="summary-grid">
+      <div class="summary-grid summary-grid-6" id="summary-grid">
         <div class="stat-card">
           <span class="stat-label">Detected</span>
           <strong class="stat-value" id="stat-detected">0</strong>
         </div>
         <div class="stat-card stat-confirmed">
-          <span class="stat-label">Confirmed</span>
+          <span class="stat-label">Auto OK</span>
           <strong class="stat-value" id="stat-confirmed">0</strong>
         </div>
+        <div class="stat-card stat-reviewer">
+          <span class="stat-label">Reviewed</span>
+          <strong class="stat-value" id="stat-reviewer">0</strong>
+        </div>
         <div class="stat-card stat-likely">
-          <span class="stat-label">Needs Review</span>
+          <span class="stat-label">Review</span>
           <strong class="stat-value" id="stat-likely">0</strong>
         </div>
         <div class="stat-card stat-unknown">
@@ -151,9 +156,23 @@
       <div class="filter-bar" role="tablist" aria-label="Filter face results">
         <button type="button" class="filter-chip active" data-filter="all" role="tab" aria-selected="true">All</button>
         <button type="button" class="filter-chip" data-filter="Confirmed" role="tab" aria-selected="false">Confirmed</button>
+        <button type="button" class="filter-chip" data-filter="Confirmed by reviewer" role="tab" aria-selected="false">Reviewed</button>
         <button type="button" class="filter-chip" data-filter="Likely" role="tab" aria-selected="false">Likely</button>
         <button type="button" class="filter-chip" data-filter="unknown" role="tab" aria-selected="false">unknown</button>
-        <button type="button" class="filter-chip" data-filter="absent" role="tab" aria-selected="false">Absent Enrolled</button>
+        <button type="button" class="filter-chip" data-filter="absent" role="tab" aria-selected="false">Absent</button>
+      </div>
+
+      <div id="queue-bar" class="queue-bar hidden" aria-label="Keyboard Review Queue">
+        <div class="queue-left">
+          <button type="button" id="btn-toggle-queue" class="btn btn-sm btn-secondary">Review Queue (0)</button>
+          <span id="queue-progress" class="queue-progress"></span>
+        </div>
+        <div class="queue-actions">
+          <button type="button" id="btn-queue-prev" class="btn btn-sm btn-ghost" title="Previous (K)">Prev</button>
+          <button type="button" id="btn-queue-skip" class="btn btn-sm btn-ghost" title="Skip (S)">Skip</button>
+          <button type="button" id="btn-queue-next" class="btn btn-sm btn-ghost" title="Next (J)">Next</button>
+          <button type="button" id="btn-undo" class="btn btn-sm btn-ghost" title="Undo last correction (Z)" disabled>Undo</button>
+        </div>
       </div>
 
       <div id="results-list" class="results-list" role="list">
@@ -201,28 +220,30 @@
           </div>
         </div>
 
+        <p id="explain-original" class="explain-original hidden"></p>
         <p id="explain-runnerup" class="explain-detail"></p>
         <p id="explain-reason" class="explain-reason"></p>
 
         <div class="correction-box">
-          <div class="correction-title">Human-in-the-Loop Review (Session Only)</div>
+          <div class="correction-title">Reviewer Actions (Session Only &mdash; Never Alters Embeddings)</div>
+          <div class="correction-row">
+            <input id="correction-reason" type="text" placeholder="Optional reason note..." aria-label="Optional reviewer reason note" />
+          </div>
           <div class="correction-actions">
-            <button type="button" id="btn-confirm-match" class="btn btn-sm btn-confirmed hidden">Confirm Match</button>
-            <button type="button" id="btn-mark-unknown" class="btn btn-sm btn-ghost">Mark unknown</button>
+            <button type="button" id="btn-confirm-match" class="btn btn-sm btn-confirmed hidden" title="Shortcut: C">Confirm (C)</button>
+            <button type="button" id="btn-mark-unknown" class="btn btn-sm btn-ghost" title="Shortcut: U">Mark unknown (U)</button>
           </div>
 
-          <div class="correction-row">
-            <select id="assign-select" aria-label="Assign face to enrolled person">
-              <option value="">Assign to enrolled person...</option>
-            </select>
-            <button type="button" id="btn-assign-person" class="btn btn-sm btn-secondary">Assign</button>
-          </div>
-
-          <div class="correction-row">
-            <input id="enroll-new-name" type="text" placeholder="Or enroll as new person..." aria-label="New person name" />
-            <button type="button" id="btn-enroll-new" class="btn btn-sm btn-primary">Enroll</button>
+          <div class="assign-search-wrap">
+            <input id="assign-search-input" type="text" placeholder="Assign (A): type name to filter..." aria-label="Search enrolled person to assign" autocomplete="off" />
+            <div id="assign-results-list" class="assign-results hidden" role="listbox"></div>
           </div>
         </div>
+
+        <details class="trail-details" id="trail-details">
+          <summary>Append-Only Decision Trail (<span id="trail-count">0</span>)</summary>
+          <div id="trail-list" class="trail-list"></div>
+        </details>
       </section>
     </aside>
   </main>

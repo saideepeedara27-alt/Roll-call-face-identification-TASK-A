@@ -2,15 +2,17 @@
 
 import csv
 from io import StringIO
+import json
 import cv2
 import numpy as np
 
 
 # BGR colors matching UI status palette
 _STATUS_COLORS = {
-    "Confirmed": (110, 185, 16),   # Emerald green
-    "Likely": (11, 158, 245),      # Amber orange
-    "unknown": (94, 63, 244),      # Coral rose
+    "Confirmed": (110, 185, 16),              # Emerald green
+    "Confirmed by reviewer": (136, 148, 13),  # Teal-emerald
+    "Likely": (11, 158, 245),                 # Amber orange
+    "unknown": (94, 63, 244),                 # Coral rose
 }
 
 
@@ -31,6 +33,8 @@ def render_annotated_png(bgr_image: np.ndarray, faces: list[dict]) -> bytes:
         idx_num = face["face_index"] + 1
         if status == "Confirmed":
             label = f"#{idx_num} {face['display_name']}"
+        elif status == "Confirmed by reviewer":
+            label = f"#{idx_num} {face['display_name']} [R]"
         elif status == "Likely":
             label = f"#{idx_num} {face['display_name']}?"
         else:
@@ -73,9 +77,12 @@ def build_attendance_csv(faces: list[dict], absent_identities: list[dict]) -> st
             "face_index",
             "identity_name",
             "status",
+            "original_status",
+            "original_identity",
             "similarity_score",
             "runner_up_name",
             "runner_up_margin",
+            "face_box_xywh",
             "face_size_px",
             "blur_laplacian",
             "decision_reason",
@@ -90,9 +97,12 @@ def build_attendance_csv(faces: list[dict], absent_identities: list[dict]) -> st
                 face["face_index"] + 1,
                 face["display_name"],
                 face["status"],
+                face.get("original_status", face["status"]),
+                face.get("original_display_name", face["display_name"]),
                 face["similarity"] if face["similarity"] is not None else "",
                 face.get("runner_up_name") or "",
                 face["runner_up_margin"] if face.get("runner_up_margin") is not None else "",
+                json.dumps(face["bbox"]) if "bbox" in face else "",
                 f"{q.get('width_px', 0)}x{q.get('height_px', 0)}",
                 q.get("blur_laplacian", ""),
                 face.get("decision_reason", ""),
@@ -111,7 +121,10 @@ def build_attendance_csv(faces: list[dict], absent_identities: list[dict]) -> st
                 "",
                 "",
                 "",
-                "Not detected in group photograph",
+                "",
+                "",
+                "",
+                "Not confirmed in group photograph",
             ]
         )
 

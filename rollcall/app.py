@@ -63,6 +63,9 @@ def _b64_jpeg(bgr_crop) -> str:
     ).decode("ascii")
 
 
+STATUS_CONFIRMED_REVIEWER = "Confirmed by reviewer"
+
+
 def _serialize_face_result(r: FaceMatchResult) -> dict:
     return {
         "face_index": r.face_index,
@@ -76,6 +79,12 @@ def _serialize_face_result(r: FaceMatchResult) -> dict:
         "runner_up_margin": r.runner_up_margin,
         "matched_photo_id": r.matched_photo_id,
         "decision_reason": r.decision_reason,
+        "original_status": r.status,
+        "original_identity_id": r.identity_id,
+        "original_display_name": r.display_name,
+        "original_similarity": r.similarity,
+        "original_matched_photo_id": r.matched_photo_id,
+        "original_decision_reason": r.decision_reason,
         "quality": asdict(r.quality),
         "crop_b64": r.crop_b64,
         "manually_corrected": False,
@@ -533,8 +542,26 @@ def _identify_group_image(
         "crop_bytes": crop_bytes_by_face,
         "model_version": engine.model_version,
         "calibration": calibration.to_dict(),
+        "undo_stack": [],
     }
     state.store_session(session_id, session_obj)
+
+    for face in serialized_faces:
+        state.db.append_trail_entry(
+            session_id=session_id,
+            group_image_sha256=loaded.sha256,
+            face_index=face["face_index"],
+            face_bbox=face["bbox"],
+            actor="automated",
+            action="initial_detection",
+            previous_status=None,
+            previous_identity_id=None,
+            previous_display_name=None,
+            new_status=face["status"],
+            new_identity_id=face["identity_id"],
+            new_display_name=face["display_name"],
+            reason_note=face["decision_reason"],
+        )
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
     response_payload = _build_session_response(
@@ -558,11 +585,17 @@ def _build_session_response(
         identities = state.db.list_identities()
 
     faces = session_obj["faces"]
-    confirmed_ids = {
+    confirmed_auto_ids = {
         f["identity_id"]
         for f in faces
         if f["status"] == STATUS_CONFIRMED and f["identity_id"]
     }
+    confirmed_reviewer_ids = {
+        f["identity_id"]
+        for f in faces
+        if f["status"] == STATUS_CONFIRMED_REVIEWER and f["identity_id"]
+    }
+    present_ids = confirmed_auto_ids | confirmed_reviewer_ids
     likely_ids = {
         f["identity_id"]
         for f in faces
@@ -592,12 +625,14 @@ def _build_session_response(
             "pending_review": person["identity_id"] in likely_ids,
         }
         for person in identities
-        if person["identity_id"] not in confirmed_ids
+        if person["identity_id"] not in present_ids
     ]
 
     summary = {
         "total_detected": len(faces),
         "confirmed": sum(1 for f in faces if f["status"] == STATUS_CONFIRMED),
+        "confirmed_by_reviewer": sum(1 for f in faces if f["status"] == STATUS_CONFIRMED_REVIEWER),
+        "present_total": len(present_ids),
         "likely": sum(1 for f in faces if f["status"] == STATUS_LIKELY),
         "unknown": sum(1 for f in faces if f["status"] == STATUS_UNKNOWN),
         "enrolled_total": len(identities),
@@ -616,6 +651,8 @@ def _build_session_response(
         "not_enrolled_identities": not_enrolled_identities,
         "identities": identities,
         "calibration": session_obj.get("calibration") or state.last_calibration,
+        "decision_trail": state.db.get_session_trail(session_obj["session_id"]),
+        "can_undo": len(session_obj.get("undo_stack", [])) > 0,
         "memory_rss_mb": _memory_rss_mb(),
         "model_version": session_obj["model_version"],
     }
@@ -639,9 +676,9 @@ class EnrollPathRequest(BaseModel):
 
 class CorrectionRequest(BaseModel):
     face_index: int
-    action: str  # "confirm", "assign", "mark_unknown", "enroll_new"
+    action: str  # "confirm", "assign", "mark_unknown"
     identity_id: str | None = None
-    new_display_name: str | None = None
+    reason_note: str | None = None
 
 
 _FORBIDDEN_ROOTS = (
@@ -981,13 +1018,31 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         if face is None:
             raise HTTPException(status_code=404, detail="Face index not found in session.")
 
+        prev_snapshot = {
+            "face_index": face["face_index"],
+            "status": face["status"],
+            "identity_id": face["identity_id"],
+            "display_name": face["display_name"],
+            "matched_photo_id": face["matched_photo_id"],
+            "decision_reason": face["decision_reason"],
+            "manually_corrected": face["manually_corrected"],
+        }
+        prev_status = face["status"]
         prev_id = face["identity_id"]
+        prev_name = face["display_name"]
+        note = (req.reason_note or "").strip() or None
 
         if req.action == "confirm":
-            if not face["identity_id"]:
-                raise HTTPException(status_code=400, detail="Cannot confirm an unknown face without an identity.")
-            face["status"] = STATUS_CONFIRMED
-            face["decision_reason"] = "Manually confirmed by user after inspecting reference photo."
+            if prev_status != STATUS_LIKELY or not face["identity_id"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Confirm (C) applies only to Likely matches; use Assign (A) for unknown faces.",
+                )
+            face["status"] = STATUS_CONFIRMED_REVIEWER
+            face["decision_reason"] = (
+                "Confirmed by reviewer after inspecting reference photo."
+                + (f" Note: {note}" if note else "")
+            )
             face["manually_corrected"] = True
         elif req.action == "assign":
             if not req.identity_id:
@@ -996,52 +1051,33 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             target = identities.get(req.identity_id)
             if target is None:
                 raise HTTPException(status_code=404, detail="Target identity not found.")
+            exemplars = state.db.load_all_exemplars(session_obj["model_version"])
+            ref_photo = next(
+                (ex["photo_id"] for ex in exemplars if ex["identity_id"] == target["identity_id"]),
+                None,
+            )
             face["identity_id"] = target["identity_id"]
             face["display_name"] = target["display_name"]
-            face["status"] = STATUS_CONFIRMED
-            face["decision_reason"] = f"Manually assigned to {target['display_name']} by user."
+            face["status"] = STATUS_CONFIRMED_REVIEWER
+            face["matched_photo_id"] = ref_photo
+            face["decision_reason"] = (
+                f"Assigned to {target['display_name']} by reviewer."
+                + (f" Note: {note}" if note else "")
+            )
             face["manually_corrected"] = True
         elif req.action == "mark_unknown":
             face["identity_id"] = None
             face["display_name"] = STATUS_UNKNOWN
             face["status"] = STATUS_UNKNOWN
             face["matched_photo_id"] = None
-            face["decision_reason"] = "Manually marked as unknown by user."
-            face["manually_corrected"] = True
-        elif req.action == "enroll_new":
-            name = (req.new_display_name or "").strip()
-            if not name:
-                raise HTTPException(status_code=400, detail="A display name is required to enroll a new person.")
-            parsed = parse_identity_filename(f"{name}.jpg")
-            emb = session_obj["embeddings"].get(req.face_index)
-            if emb is None:
-                # Extract embedding on demand if quality gate blocked it originally
-                engine = _require_engine(state)
-                detected = engine.detect_faces(session_obj["bgr"])
-                if req.face_index >= len(detected):
-                    raise HTTPException(status_code=400, detail="Could not extract face embedding for enrollment.")
-                emb = engine.extract_embedding(session_obj["bgr"], detected[req.face_index])
-
-            crop_bytes = session_obj["crop_bytes"][req.face_index]
-            photo_id = state.db.add_reference_photo(
-                identity_id=parsed.identity_key,
-                display_name=parsed.display_name,
-                original_filename=f"{parsed.display_name} (enrolled from group).jpg",
-                image_sha256=f"{session_obj['group_sha256']}_face_{req.face_index}",
-                model_version=session_obj["model_version"],
-                embedding=emb,
-                crop_jpeg=crop_bytes,
-                quality_dict=face["quality"],
-                persist_cache=False,
+            face["decision_reason"] = (
+                "Marked as unknown by reviewer." + (f" Note: {note}" if note else "")
             )
-            face["identity_id"] = parsed.identity_key
-            face["display_name"] = parsed.display_name
-            face["status"] = STATUS_CONFIRMED
-            face["matched_photo_id"] = photo_id
-            face["decision_reason"] = f"Newly enrolled locally as {parsed.display_name}."
             face["manually_corrected"] = True
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported correction action: {req.action}")
+
+        session_obj.setdefault("undo_stack", []).append(prev_snapshot)
 
         state.db.record_correction(
             group_image_sha256=session_obj["group_sha256"],
@@ -1050,6 +1086,69 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             new_identity_id=face["identity_id"],
             new_status=face["status"],
             action=req.action,
+        )
+        state.db.append_trail_entry(
+            session_id=session_id,
+            group_image_sha256=session_obj["group_sha256"],
+            face_index=req.face_index,
+            face_bbox=face["bbox"],
+            actor="reviewer",
+            action=req.action,
+            previous_status=prev_status,
+            previous_identity_id=prev_id,
+            previous_display_name=prev_name,
+            new_status=face["status"],
+            new_identity_id=face["identity_id"],
+            new_display_name=face["display_name"],
+            reason_note=note,
+        )
+
+        return _build_session_response(state=state, session_obj=session_obj)
+
+    @app.post("/api/sessions/{session_id}/undo")
+    def undo_last_correction(session_id: str):
+        with state.lock:
+            session_obj = state.sessions.get(session_id)
+        if session_obj is None:
+            raise HTTPException(status_code=404, detail="Identification session not found.")
+
+        undo_stack = session_obj.get("undo_stack", [])
+        if not undo_stack:
+            raise HTTPException(status_code=400, detail="Nothing to undo in this session.")
+
+        snap = undo_stack.pop()
+        face = next(
+            (f for f in session_obj["faces"] if f["face_index"] == snap["face_index"]),
+            None,
+        )
+        if face is None:
+            raise HTTPException(status_code=404, detail="Face index not found in session.")
+
+        prev_status = face["status"]
+        prev_id = face["identity_id"]
+        prev_name = face["display_name"]
+
+        face["status"] = snap["status"]
+        face["identity_id"] = snap["identity_id"]
+        face["display_name"] = snap["display_name"]
+        face["matched_photo_id"] = snap["matched_photo_id"]
+        face["decision_reason"] = snap["decision_reason"]
+        face["manually_corrected"] = snap["manually_corrected"]
+
+        state.db.append_trail_entry(
+            session_id=session_id,
+            group_image_sha256=session_obj["group_sha256"],
+            face_index=face["face_index"],
+            face_bbox=face["bbox"],
+            actor="reviewer",
+            action="undo",
+            previous_status=prev_status,
+            previous_identity_id=prev_id,
+            previous_display_name=prev_name,
+            new_status=face["status"],
+            new_identity_id=face["identity_id"],
+            new_display_name=face["display_name"],
+            reason_note="Undid previous reviewer action.",
         )
 
         return _build_session_response(state=state, session_obj=session_obj)

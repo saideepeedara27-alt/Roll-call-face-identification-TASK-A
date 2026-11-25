@@ -5,6 +5,7 @@ const state = {
   identities: [],
   selectedFaceIndex: null,
   activeFilter: "all",
+  reviewQueueActive: false,
   zoom: 1,
   panX: 0,
   panY: 0,
@@ -14,6 +15,10 @@ const state = {
   didDrag: false,
   loadedImage: null,
 };
+
+function statusCssClass(status) {
+  return status === "Confirmed by reviewer" ? "ConfirmedReviewer" : status;
+}
 
 const el = (id) => document.getElementById(id);
 
@@ -90,16 +95,6 @@ async function refreshIdentities() {
           : person.display_name;
       chips.appendChild(chip);
     }
-  }
-
-  // Update assign dropdown
-  const select = el("assign-select");
-  select.innerHTML = '<option value="">Assign to enrolled person...</option>';
-  for (const person of state.identities) {
-    const opt = document.createElement("option");
-    opt.value = person.identity_id;
-    opt.textContent = person.display_name;
-    select.appendChild(opt);
   }
 }
 
@@ -472,6 +467,7 @@ async function runDemoMode() {
 
 function loadSessionIntoUI(data) {
   state.session = data;
+  state.reviewQueueActive = false;
   state.selectedFaceIndex = data.faces.length ? data.faces[0].face_index : null;
   state.activeFilter = "all";
   updateFilterChips();
@@ -500,19 +496,112 @@ function loadSessionIntoUI(data) {
   renderExplainabilityPanel();
 }
 
+function getReviewQueueIndices() {
+  if (!state.session) return [];
+  return state.session.faces
+    .filter((f) => f.status === "Likely" || f.status === "unknown")
+    .map((f) => f.face_index);
+}
+
+function updateQueueBar() {
+  const bar = el("queue-bar");
+  if (!state.session) {
+    bar.classList.add("hidden");
+    return;
+  }
+  bar.classList.remove("hidden");
+  const queue = getReviewQueueIndices();
+  const btn = el("btn-toggle-queue");
+  btn.textContent = state.reviewQueueActive
+    ? `Exit Queue (${queue.length})`
+    : `Review Queue (${queue.length})`;
+  btn.classList.toggle("btn-queue-active", state.reviewQueueActive);
+
+  const prog = el("queue-progress");
+  if (state.reviewQueueActive && queue.length > 0) {
+    const pos = queue.indexOf(state.selectedFaceIndex);
+    prog.textContent = pos >= 0 ? `${pos + 1} of ${queue.length}` : `0 of ${queue.length}`;
+  } else if (state.reviewQueueActive) {
+    prog.textContent = "All reviewed";
+  } else {
+    prog.textContent = "";
+  }
+  el("btn-undo").disabled = !state.session.can_undo;
+}
+
+function stepFace(delta, queueOnly = state.reviewQueueActive) {
+  if (!state.session || !state.session.faces.length) return;
+  const pool = queueOnly
+    ? getReviewQueueIndices()
+    : state.session.faces.map((f) => f.face_index);
+  if (!pool.length) {
+    showToast("No faces remaining in Review Queue.");
+    return;
+  }
+  const curPos = pool.indexOf(state.selectedFaceIndex);
+  const nextPos = curPos === -1 ? 0 : (curPos + delta + pool.length) % pool.length;
+  selectFace(pool[nextPos]);
+}
+
+function advanceQueueAfterDecision(prevQueue) {
+  const nextQueue = getReviewQueueIndices();
+  if (!state.reviewQueueActive) return;
+  if (!nextQueue.length) {
+    state.reviewQueueActive = false;
+    updateQueueBar();
+    showToast("Review Queue complete.");
+    return;
+  }
+  // Pick next unreviewed item following previous position
+  const prevIdx = state.selectedFaceIndex;
+  const candidate = nextQueue.find((idx) => idx > prevIdx) ?? nextQueue[0];
+  selectFace(candidate);
+}
+
+function renderAssignFilterResults(query) {
+  const box = el("assign-results-list");
+  const q = (query || "").trim().toLowerCase();
+  const matches = state.identities.filter((p) =>
+    !q || p.display_name.toLowerCase().includes(q)
+  );
+  box.innerHTML = "";
+  if (!matches.length) {
+    box.innerHTML = '<div class="assign-option">No enrolled matches</div>';
+    box.classList.remove("hidden");
+    return;
+  }
+  for (const person of matches.slice(0, 25)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "assign-option";
+    btn.setAttribute("role", "option");
+    btn.textContent = person.display_name;
+    btn.addEventListener("click", async () => {
+      box.classList.add("hidden");
+      el("assign-search-input").value = "";
+      await submitCorrection({ action: "assign", identity_id: person.identity_id }, true);
+    });
+    box.appendChild(btn);
+  }
+  box.classList.remove("hidden");
+}
+
 function updateSummaryAndList() {
   const s = state.session?.summary || {
     total_detected: 0,
     confirmed: 0,
+    confirmed_by_reviewer: 0,
     likely: 0,
     unknown: 0,
     absent_count: 0,
   };
   el("stat-detected").textContent = String(s.total_detected);
   el("stat-confirmed").textContent = String(s.confirmed);
+  el("stat-reviewer").textContent = String(s.confirmed_by_reviewer || 0);
   el("stat-likely").textContent = String(s.likely);
   el("stat-unknown").textContent = String(s.unknown);
   el("stat-absent").textContent = String(s.absent_count);
+  updateQueueBar();
 
   const list = el("results-list");
   list.innerHTML = "";
@@ -574,13 +663,16 @@ function updateSummaryAndList() {
 
     const badgeLabel = face.status === "Likely" ? "Needs Review" : face.status;
     const simTxt = face.similarity !== null ? `Sim: ${face.similarity.toFixed(3)}` : "Quality gate";
+    const origSub = face.manually_corrected
+      ? ` • Orig: ${face.original_display_name}`
+      : "";
     btn.innerHTML = `
       <img class="face-thumb" src="${face.crop_b64}" alt="Face #${face.face_index + 1}" />
       <div class="face-card-main">
         <span class="face-card-name">#${face.face_index + 1} ${escapeHtml(face.display_name)}</span>
-        <span class="face-card-sub">${simTxt} &bull; ${face.quality.width_px}×${face.quality.height_px}px</span>
+        <span class="face-card-sub">${simTxt} &bull; ${face.quality.width_px}×${face.quality.height_px}px${escapeHtml(origSub)}</span>
       </div>
-      <span class="status-badge badge-${face.status}">${badgeLabel}</span>
+      <span class="status-badge badge-${statusCssClass(face.status)}">${badgeLabel}</span>
     `;
     btn.addEventListener("click", () => selectFace(face.face_index));
     list.appendChild(btn);
@@ -611,7 +703,7 @@ function renderExplainabilityPanel() {
   el("explain-title").textContent = face.display_name;
 
   const badge = el("explain-badge");
-  badge.className = `status-badge badge-${face.status}`;
+  badge.className = `status-badge badge-${statusCssClass(face.status)}`;
   badge.textContent = face.status === "Likely" ? "Likely (Needs Review)" : face.status;
 
   el("explain-group-crop").src = face.crop_b64;
@@ -635,32 +727,79 @@ function renderExplainabilityPanel() {
   el("explain-size").textContent = `${face.quality.width_px} × ${face.quality.height_px} px`;
   el("explain-quality").textContent = `Blur ${face.quality.blur_laplacian} • Det ${face.quality.detector_score}`;
 
+  const origEl = el("explain-original");
+  if (face.manually_corrected) {
+    const origSim = face.original_similarity !== null ? ` (sim ${face.original_similarity.toFixed(4)})` : "";
+    origEl.textContent = `Original automated result: ${face.original_status} — ${face.original_display_name}${origSim}`;
+    origEl.classList.remove("hidden");
+  } else {
+    origEl.classList.add("hidden");
+  }
+
   el("explain-runnerup").textContent = face.runner_up_name
     ? `Runner-up candidate: ${face.runner_up_name} (${face.runner_up_similarity?.toFixed(4) ?? "—"})`
     : "No runner-up candidate above floor.";
   el("explain-reason").textContent = face.decision_reason;
 
   el("btn-confirm-match").classList.toggle("hidden", face.status !== "Likely");
+
+  // Render append-only decision trail for selected face (fallback to full session if none)
+  const allTrail = state.session.decision_trail || [];
+  const faceTrail = allTrail.filter((t) => t.face_index === face.face_index);
+  el("trail-count").textContent = String(faceTrail.length);
+  const trailList = el("trail-list");
+  trailList.innerHTML = "";
+  for (const entry of faceTrail) {
+    const row = document.createElement("div");
+    row.className = "trail-item";
+    const noteTxt = entry.reason_note ? ` • Note: ${entry.reason_note}` : "";
+    row.textContent = `[${entry.actor}] ${entry.action}: ${entry.previous_status ? entry.previous_status + " (" + entry.previous_display_name + ") → " : ""}${entry.new_status} (${entry.new_display_name})${noteTxt}`;
+    trailList.appendChild(row);
+  }
 }
 
-async function submitCorrection(payload) {
+async function submitCorrection(payload, advanceQueue = false) {
   if (!state.session || state.selectedFaceIndex === null) return;
+  const reasonNote = el("correction-reason").value.trim() || null;
   const res = await fetch(`/api/sessions/${state.session.session_id}/correct`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ face_index: state.selectedFaceIndex, ...payload }),
+    body: JSON.stringify({
+      face_index: state.selectedFaceIndex,
+      reason_note: reasonNote,
+      ...payload,
+    }),
   });
   const data = await res.json();
   if (!res.ok) {
     showToast(data.detail || "Could not update identification.");
     return;
   }
+  el("correction-reason").value = "";
   state.session = { ...state.session, ...data };
   await refreshIdentities();
   updateSummaryAndList();
   renderExplainabilityPanel();
   drawCanvas();
-  showToast("Session identification updated.");
+  showToast("Decision recorded in trail.");
+  if (advanceQueue) {
+    advanceQueueAfterDecision();
+  }
+}
+
+async function undoLastCorrection() {
+  if (!state.session) return;
+  const res = await fetch(`/api/sessions/${state.session.session_id}/undo`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) {
+    showToast(data.detail || "Nothing to undo.");
+    return;
+  }
+  state.session = { ...state.session, ...data };
+  updateSummaryAndList();
+  renderExplainabilityPanel();
+  drawCanvas();
+  showToast("Undid last reviewer action (recorded in trail).");
 }
 
 // Canvas Rendering, Zoom & Hit Testing
@@ -704,6 +843,7 @@ function drawCanvas() {
 
   const palette = {
     Confirmed: "#10b981",
+    "Confirmed by reviewer": "#0d9488",
     Likely: "#f59e0b",
     unknown: "#ef4444",
   };
@@ -731,7 +871,14 @@ function drawCanvas() {
       ctx.strokeRect(x - 4, y - 4, w + 8, h + 8);
     }
 
-    const prefix = face.status === "Confirmed" ? "✓" : face.status === "Likely" ? "?" : "!";
+    const prefix =
+      face.status === "Confirmed"
+        ? "✓"
+        : face.status === "Confirmed by reviewer"
+          ? "✓R"
+          : face.status === "Likely"
+            ? "?"
+            : "!";
     const label = `${prefix} #${face.face_index + 1} ${face.display_name}`;
     ctx.font = "600 12px -apple-system, BlinkMacSystemFont, sans-serif";
     const textW = ctx.measureText(label).width;
@@ -878,18 +1025,52 @@ function bindEvents() {
     });
   });
 
-  el("btn-confirm-match").addEventListener("click", () => submitCorrection({ action: "confirm" }));
-  el("btn-mark-unknown").addEventListener("click", () => submitCorrection({ action: "mark_unknown" }));
-  el("btn-assign-person").addEventListener("click", () => {
-    const iid = el("assign-select").value;
-    if (!iid) return showToast("Choose an enrolled identity first.");
-    submitCorrection({ action: "assign", identity_id: iid });
+  el("btn-confirm-match").addEventListener("click", () => {
+    const face = state.session?.faces.find((f) => f.face_index === state.selectedFaceIndex);
+    if (!face || face.status !== "Likely") return;
+    submitCorrection({ action: "confirm" }, state.reviewQueueActive);
   });
-  el("btn-enroll-new").addEventListener("click", () => {
-    const name = el("enroll-new-name").value.trim();
-    if (!name) return showToast("Enter a person's name first.");
-    submitCorrection({ action: "enroll_new", new_display_name: name });
-    el("enroll-new-name").value = "";
+  el("btn-mark-unknown").addEventListener("click", () =>
+    submitCorrection({ action: "mark_unknown" }, state.reviewQueueActive)
+  );
+  el("btn-undo").addEventListener("click", undoLastCorrection);
+
+  el("btn-toggle-queue").addEventListener("click", () => {
+    if (!state.session) return;
+    state.reviewQueueActive = !state.reviewQueueActive;
+    if (state.reviewQueueActive) {
+      const q = getReviewQueueIndices();
+      if (!q.length) {
+        state.reviewQueueActive = false;
+        showToast("No Likely or unknown faces to review.");
+      } else {
+        selectFace(q[0]);
+      }
+    } else {
+      updateQueueBar();
+    }
+  });
+  el("btn-queue-prev").addEventListener("click", () => stepFace(-1));
+  el("btn-queue-next").addEventListener("click", () => stepFace(1));
+  el("btn-queue-skip").addEventListener("click", () => {
+    if (state.reviewQueueActive) stepFace(1, true);
+    else stepFace(1, false);
+  });
+
+  const assignInput = el("assign-search-input");
+  assignInput.addEventListener("focus", () => renderAssignFilterResults(assignInput.value));
+  assignInput.addEventListener("input", () => renderAssignFilterResults(assignInput.value));
+  assignInput.addEventListener("keydown", async (e) => {
+    if (e.key === "Escape") {
+      el("assign-results-list").classList.add("hidden");
+      assignInput.blur();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const firstOpt = el("assign-results-list").querySelector("button.assign-option");
+      if (firstOpt) firstOpt.click();
+    }
   });
 
   el("btn-export-png").addEventListener("click", () => {
@@ -961,25 +1142,51 @@ function bindEvents() {
     if (file) handleGroupUpload(file);
   });
 
-  // Keyboard navigation
+  // Keyboard shortcuts (ignored while typing in inputs/selects/textareas)
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       closeModal("enroll-modal");
+      closeModal("about-modal");
       closeModal("wipe-modal");
+      el("assign-results-list").classList.add("hidden");
+      if (state.reviewQueueActive) {
+        state.reviewQueueActive = false;
+        updateQueueBar();
+      }
       return;
     }
-    if (!state.session || !state.session.faces.length) return;
     if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+    if (!state.session || !state.session.faces.length) return;
 
-    if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+    const k = e.key.toLowerCase();
+    if (k === "r") {
       e.preventDefault();
-      const idx = state.selectedFaceIndex === null ? 0 : (state.selectedFaceIndex + 1) % state.session.faces.length;
-      selectFace(idx);
-    } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+      el("btn-toggle-queue").click();
+    } else if (k === "j") {
       e.preventDefault();
-      const n = state.session.faces.length;
-      const idx = state.selectedFaceIndex === null ? 0 : (state.selectedFaceIndex - 1 + n) % n;
-      selectFace(idx);
+      stepFace(1);
+    } else if (k === "k") {
+      e.preventDefault();
+      stepFace(-1);
+    } else if (k === "s") {
+      e.preventDefault();
+      el("btn-queue-skip").click();
+    } else if (k === "c") {
+      const face = state.session.faces.find((f) => f.face_index === state.selectedFaceIndex);
+      if (face && face.status === "Likely") {
+        e.preventDefault();
+        submitCorrection({ action: "confirm" }, state.reviewQueueActive);
+      }
+    } else if (k === "u") {
+      e.preventDefault();
+      submitCorrection({ action: "mark_unknown" }, state.reviewQueueActive);
+    } else if (k === "a") {
+      e.preventDefault();
+      el("assign-search-input").focus();
+      renderAssignFilterResults(el("assign-search-input").value);
+    } else if (k === "z") {
+      e.preventDefault();
+      undoLastCorrection();
     }
   });
 
