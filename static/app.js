@@ -125,38 +125,121 @@ function renderFlaggedPairsHtml(cal) {
   return html;
 }
 
-function renderEnrollmentSummary(summary) {
+let activeHealthFilter = "all";
+let latestEnrollSummary = null;
+let pendingBannerDismissed = false;
+
+function updatePendingAttentionBanner(summary) {
+  const banner = el("pending-attention-banner");
+  const pendingCount = summary?.counts?.needs_attention || 0;
+  if (pendingCount > 0 && !pendingBannerDismissed) {
+    const noun = pendingCount === 1 ? "person is" : "people are";
+    el("pending-attention-text").textContent =
+      `${pendingCount} ${noun} not enrolled until you pick their face.`;
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+
+function renderHealthFileList(records) {
+  const listWrap = el("health-file-list");
+  if (!listWrap) return;
+  const filtered = records.filter(
+    (r) => activeHealthFilter === "all" || r.status === activeHealthFilter
+  );
+  if (!filtered.length) {
+    listWrap.innerHTML = '<div class="photo-meta">No files in this status category.</div>';
+    return;
+  }
+  const labelMap = {
+    enrolled: "Enrolled",
+    enrolled_with_warnings: "Warning",
+    needs_attention: "Needs Attention",
+    failed: "Failed",
+    ignored: "Ignored",
+  };
+  listWrap.innerHTML = "";
+  for (const rec of filtered) {
+    const row = document.createElement("div");
+    row.className = "health-row";
+    const thumbHtml = rec.thumb_b64
+      ? `<img class="health-thumb" src="${rec.thumb_b64}" alt="${escapeHtml(rec.filename)}" />`
+      : `<div class="health-thumb-ph">${rec.status === "ignored" ? "SYS" : "FILE"}</div>`;
+    const titleTxt = rec.display_name ? `${rec.filename} → ${rec.display_name}` : rec.filename;
+    row.innerHTML = `
+      ${thumbHtml}
+      <div class="health-row-main">
+        <span class="health-row-title">${escapeHtml(titleTxt)}</span>
+        <span class="health-row-reason">${escapeHtml(rec.reason || "")}</span>
+      </div>
+      <span class="status-badge badge-${rec.status}">${labelMap[rec.status] || rec.status}</span>
+    `;
+    listWrap.appendChild(row);
+  }
+}
+
+function renderEnrollmentSummary(summary, resetDismiss = true) {
+  latestEnrollSummary = summary;
+  if (resetDismiss) pendingBannerDismissed = false;
+  updatePendingAttentionBanner(summary);
   const box = el("enroll-summary");
   box.classList.remove("hidden");
-  const warnCount = (summary.warnings || []).length;
-  const errCount = (summary.errors || []).length;
+  const counts = summary.counts || {
+    selected: summary.total_files,
+    enrolled: summary.enrolled_photos,
+    enrolled_with_warnings: 0,
+    needs_attention: (summary.multiface_pending || []).length,
+    failed: (summary.errors || []).length,
+    ignored: 0,
+    headline: `${summary.total_files} selected`,
+  };
+  const attentionTotal =
+    counts.enrolled_with_warnings + counts.needs_attention + counts.failed;
   const flaggedCount =
     ((summary.calibration?.possible_duplicate_pairs || []).length) +
     ((summary.calibration?.lookalike_pairs || []).length);
-  el("warning-dot").classList.toggle("hidden", warnCount === 0 && errCount === 0 && flaggedCount === 0);
+  el("warning-dot").classList.toggle("hidden", attentionTotal === 0 && flaggedCount === 0);
 
   let html = `
-    <strong>Enrollment Complete:</strong>
-    ${summary.enrolled_photos} photo(s) enrolled across <strong>${summary.unique_identities}</strong> identities
-    (Cache hits: ${summary.cache_hits}, RAM: ${summary.memory_rss_mb} MB).
+    <div class="health-headline">${escapeHtml(counts.headline)}</div>
+    <div class="photo-meta">Unique identities: <strong>${summary.unique_identities}</strong> &bull; Cache hits: ${summary.cache_hits} &bull; RAM: ${summary.memory_rss_mb} MB</div>
   `;
 
-  if (warnCount > 0) {
-    html += `<div class="enroll-warn-block"><strong>Warnings (${warnCount}):</strong><ul>`;
-    for (const w of summary.warnings) {
-      html += `<li>${escapeHtml(w.filename)}: ${escapeHtml(w.reason)}</li>`;
-    }
-    html += `</ul></div>`;
-  }
-  if (errCount > 0) {
-    html += `<div class="enroll-err-block"><strong>Skipped (${errCount}):</strong><ul>`;
-    for (const e of summary.errors) {
-      html += `<li>${escapeHtml(e.filename)}: ${escapeHtml(e.reason)}</li>`;
-    }
-    html += `</ul></div>`;
-  }
   html += renderFlaggedPairsHtml(summary.calibration);
+
+  const records = summary.file_records || [];
+  if (records.length > 0) {
+    const tabs = [
+      ["all", `All (${counts.selected})`],
+      ["enrolled", `Enrolled (${counts.enrolled})`],
+      ["enrolled_with_warnings", `Warnings (${counts.enrolled_with_warnings})`],
+      ["needs_attention", `Needs Attention (${counts.needs_attention})`],
+      ["failed", `Failed (${counts.failed})`],
+      ["ignored", `Ignored (${counts.ignored})`],
+    ];
+    html += `<div class="health-filters" id="health-filters">`;
+    for (const [key, label] of tabs) {
+      const cls = activeHealthFilter === key ? "filter-chip active" : "filter-chip";
+      html += `<button type="button" class="${cls}" data-health-filter="${key}">${label}</button>`;
+    }
+    html += `</div><div id="health-file-list" class="health-list"></div>`;
+  }
+
   box.innerHTML = html;
+
+  if (records.length > 0) {
+    box.querySelectorAll("[data-health-filter]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeHealthFilter = btn.dataset.healthFilter;
+        box.querySelectorAll("[data-health-filter]").forEach((b) =>
+          b.classList.toggle("active", b.dataset.healthFilter === activeHealthFilter)
+        );
+        renderHealthFileList(records);
+      });
+    });
+    renderHealthFileList(records);
+  }
 
   renderMultiFaceChoices(summary.multiface_pending || []);
 }
@@ -171,51 +254,84 @@ function renderMultiFaceChoices(items) {
   wrap.classList.remove("hidden");
   const heading = document.createElement("h3");
   heading.className = "multiface-heading";
-  heading.textContent = `Multi-Face Reference Photos (${items.length}) — Select the target person:`;
+  heading.textContent = `Needs Attention — Multi-Face Photos (${items.length}) (choose target face):`;
   wrap.appendChild(heading);
 
   for (const item of items) {
+    let selectedIdx = item.suggested_index ?? 0;
     const card = document.createElement("div");
     card.className = "multiface-card";
     card.innerHTML = `<div><strong>${escapeHtml(item.display_name)}</strong> <span class="photo-meta">(${escapeHtml(item.filename)} — ${item.face_count} faces)</span></div>`;
+
+    const layout = document.createElement("div");
+    layout.className = "multiface-layout";
+
+    const previewImg = document.createElement("img");
+    previewImg.className = "multiface-preview";
+    previewImg.src = item.candidates[selectedIdx].annotated_thumb_b64;
+    previewImg.alt = `Boxed preview for ${item.filename}`;
+    layout.appendChild(previewImg);
+
+    const controls = document.createElement("div");
+    controls.className = "multiface-controls";
+
     const grid = document.createElement("div");
     grid.className = "multiface-grid";
+    const candButtons = [];
 
     for (const cand of item.candidates) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "candidate-btn";
+      btn.className = "candidate-btn" + (cand.candidate_index === selectedIdx ? " active" : "");
       btn.innerHTML = `<img src="${cand.crop_b64}" alt="Face option ${cand.candidate_index + 1}" /><span>Face #${cand.candidate_index + 1}</span>`;
-      btn.addEventListener("click", async () => {
-        await resolveMultiFace(item.token, cand.candidate_index, card);
+      btn.addEventListener("click", () => {
+        selectedIdx = cand.candidate_index;
+        previewImg.src = cand.annotated_thumb_b64;
+        candButtons.forEach((b, i) => b.classList.toggle("active", i === selectedIdx));
       });
+      candButtons.push(btn);
       grid.appendChild(btn);
     }
+
+    const actions = document.createElement("div");
+    actions.className = "multiface-actions";
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "btn btn-sm btn-primary";
+    confirmBtn.textContent = "Enroll Selected Face";
+    confirmBtn.addEventListener("click", async () => {
+      await resolveMultiFace(item.token, selectedIdx);
+    });
 
     const skipBtn = document.createElement("button");
     skipBtn.type = "button";
     skipBtn.className = "btn btn-sm btn-ghost";
     skipBtn.textContent = "Skip Photo";
     skipBtn.addEventListener("click", async () => {
-      await resolveMultiFace(item.token, null, card);
+      await resolveMultiFace(item.token, null);
     });
-    grid.appendChild(skipBtn);
 
-    card.appendChild(grid);
+    actions.appendChild(confirmBtn);
+    actions.appendChild(skipBtn);
+    controls.appendChild(grid);
+    controls.appendChild(actions);
+    layout.appendChild(controls);
+    card.appendChild(layout);
     wrap.appendChild(card);
   }
 }
 
-async function resolveMultiFace(token, candidateIndex, cardElement) {
+async function resolveMultiFace(token, candidateIndex) {
   const res = await fetch("/api/enroll/resolve-multiface", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token, candidate_index: candidateIndex }),
   });
   if (res.ok) {
-    cardElement.remove();
-    if (!el("multiface-section").querySelector(".multiface-card")) {
-      el("multiface-section").classList.add("hidden");
+    const data = await res.json();
+    if (data.summary) {
+      renderEnrollmentSummary(data.summary);
     }
     await refreshIdentities();
     showToast(candidateIndex === null ? "Skipped multi-face photo." : "Selected face enrolled.");
@@ -247,12 +363,12 @@ function pollEnrollJob(jobId) {
 }
 
 async function handleFolderSelect(fileList) {
-  const validFiles = Array.from(fileList).filter((f) => !f.name.startsWith("."));
+  const validFiles = Array.from(fileList);
   if (!validFiles.length) return;
 
   const form = new FormData();
   for (const file of validFiles) {
-    form.append("files", file, file.name);
+    form.append("files", file, file.webkitRelativePath || file.name);
   }
   form.append("clear_existing", el("chk-clear-existing").checked ? "true" : "false");
   form.append("persist_cache", el("chk-persist-cache").checked ? "true" : "false");
@@ -310,6 +426,7 @@ async function handleFolderPathEnroll() {
 
 async function handleGroupUpload(file) {
   if (!file) return;
+  el("demo-note-banner").classList.add("hidden");
   setLoading(true, `Analyzing ${file.name}...`);
   try {
     const form = new FormData();
@@ -338,9 +455,16 @@ async function runDemoMode() {
     if (data.demo_enrollment) {
       renderEnrollmentSummary(data.demo_enrollment);
     }
+    const demoBanner = el("demo-note-banner");
+    if (data.demo_note) {
+      demoBanner.textContent = data.demo_note;
+      demoBanner.classList.remove("hidden");
+    } else {
+      demoBanner.classList.add("hidden");
+    }
     await refreshIdentities();
     loadSessionIntoUI(data);
-    showToast("Demo Mode finished using the live recognition pipeline.");
+    showToast(data.demo_note || "Demo Mode finished using the live recognition pipeline.");
   } finally {
     setLoading(false);
   }
@@ -399,7 +523,8 @@ function updateSummaryAndList() {
 
   if (state.activeFilter === "absent") {
     const absent = state.session.absent_identities || [];
-    if (!absent.length) {
+    const notEnrolled = state.session.not_enrolled_identities || [];
+    if (!absent.length && !notEnrolled.length) {
       list.innerHTML = '<div class="empty-list-msg">Everyone enrolled is confirmed present!</div>';
       return;
     }
@@ -414,6 +539,18 @@ function updateSummaryAndList() {
         <span class="status-badge ${person.pending_review ? "badge-Likely" : "badge-Absent"}">
           ${person.pending_review ? "Needs Review" : "Absent"}
         </span>
+      `;
+      list.appendChild(row);
+    }
+    for (const person of notEnrolled) {
+      const row = document.createElement("div");
+      row.className = "face-card";
+      row.innerHTML = `
+        <div class="face-card-main">
+          <span class="face-card-name">${escapeHtml(person.display_name)}</span>
+          <span class="face-card-sub">${escapeHtml(person.original_filename)} &bull; Pick a face in Enrollment to include</span>
+        </div>
+        <span class="status-badge badge-needs_attention">Not enrolled</span>
       `;
       list.appendChild(row);
     }
@@ -681,6 +818,11 @@ function bindEvents() {
 
   el("btn-open-enroll").addEventListener("click", () => openModal("enroll-modal"));
   el("btn-empty-enroll").addEventListener("click", () => openModal("enroll-modal"));
+  el("btn-banner-pick-faces").addEventListener("click", () => openModal("enroll-modal"));
+  el("btn-banner-continue").addEventListener("click", () => {
+    pendingBannerDismissed = true;
+    el("pending-attention-banner").classList.add("hidden");
+  });
   el("btn-about-run").addEventListener("click", openAboutRunDrawer);
   el("btn-wipe").addEventListener("click", () => openModal("wipe-modal"));
 
@@ -712,6 +854,9 @@ function bindEvents() {
       el("photo-title").textContent = "No group photo loaded";
       el("photo-meta").textContent = "";
       el("enroll-summary").classList.add("hidden");
+      el("multiface-section").classList.add("hidden");
+      el("pending-attention-banner").classList.add("hidden");
+      el("demo-note-banner").classList.add("hidden");
       el("warning-dot").classList.add("hidden");
       ["btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-export-png", "btn-export-csv"].forEach(
         (id) => { el(id).disabled = true; }

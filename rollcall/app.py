@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 import threading
 import uuid
+import numpy as np
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -25,6 +26,12 @@ from rollcall.config import (
 )
 from rollcall.db import RollCallDB
 from rollcall.engine import ModelMissingError, OpenCVYuNetSFaceEngine
+from rollcall.enrollment import (
+    build_health_counts,
+    check_extra_photo_consistency,
+    is_system_file,
+    render_thumbnail_b64,
+)
 from rollcall.exporter import build_attendance_csv, render_annotated_png
 from rollcall.filename_parser import parse_identity_filename
 from rollcall.image_utils import (
@@ -94,6 +101,7 @@ class AppState:
         self.pending_multiface: dict[str, dict] = {}
         self.sessions: OrderedDict[str, dict] = OrderedDict()
         self.last_calibration: dict | None = None
+        self.last_enrollment_summary: dict | None = None
 
     def store_session(self, session_id: str, payload: dict) -> None:
         with self.lock:
@@ -113,6 +121,92 @@ def _require_engine(state: AppState):
     return state.engine
 
 
+def _enroll_single_candidate(
+    state: AppState,
+    existing_embs_by_id: dict[str, list[np.ndarray]],
+    identity_id: str,
+    display_name: str,
+    original_filename: str,
+    image_sha256: str,
+    model_version: str,
+    embedding: np.ndarray,
+    crop_jpeg: bytes,
+    quality_dict: dict,
+    thumb_b64: str,
+    persist_cache: bool,
+    warnings: list[dict],
+    infos: list[dict],
+) -> dict:
+    """Persist one reference photo, check same-person consistency, and build its health record."""
+    prev_embs = existing_embs_by_id.get(identity_id, [])
+    is_extra = len(prev_embs) > 0
+    same_ok, same_sim = check_extra_photo_consistency(prev_embs, embedding)
+
+    state.db.add_reference_photo(
+        identity_id=identity_id,
+        display_name=display_name,
+        original_filename=original_filename,
+        image_sha256=image_sha256,
+        model_version=model_version,
+        embedding=embedding,
+        crop_jpeg=crop_jpeg,
+        quality_dict=quality_dict,
+        persist_cache=persist_cache,
+    )
+    existing_embs_by_id.setdefault(identity_id, []).append(embedding)
+
+    warning_reasons: list[str] = []
+    if not quality_dict.get("passed", True):
+        warning_reasons.append(
+            "Quality warning: " + "; ".join(quality_dict.get("reasons", []))
+        )
+    if is_extra and not same_ok:
+        warning_reasons.append(
+            f"May be a different person (similarity {same_sim:.4f} < 0.363 against existing {display_name})"
+        )
+
+    if warning_reasons:
+        reason_text = "; ".join(warning_reasons)
+        warnings.append(
+            {
+                "filename": original_filename,
+                "display_name": display_name,
+                "reason": reason_text,
+            }
+        )
+        return {
+            "filename": original_filename,
+            "display_name": display_name,
+            "identity_id": identity_id,
+            "status": "enrolled_with_warnings",
+            "reason": reason_text,
+            "thumb_b64": thumb_b64,
+        }
+
+    if is_extra:
+        info_text = f"Extra photo merged into {display_name} (similarity {same_sim:.4f})"
+        infos.append(
+            {
+                "filename": original_filename,
+                "display_name": display_name,
+                "reason": info_text,
+            }
+        )
+    else:
+        w_px = quality_dict.get("width_px", 0)
+        h_px = quality_dict.get("height_px", 0)
+        info_text = f"Enrolled ({w_px}x{h_px} px)"
+
+    return {
+        "filename": original_filename,
+        "display_name": display_name,
+        "identity_id": identity_id,
+        "status": "enrolled",
+        "reason": info_text,
+        "thumb_b64": thumb_b64,
+    }
+
+
 def _enroll_file_list(
     state: AppState,
     file_items: list[tuple[str, bytes]],
@@ -128,12 +222,18 @@ def _enroll_file_list(
         state.db.clear_enrolled_roster()
         with state.lock:
             state.pending_multiface.clear()
+        existing_embs_by_id: dict[str, list[np.ndarray]] = {}
+    else:
+        existing_embs_by_id = {}
+        for ex in state.db.load_all_exemplars(engine.model_version):
+            existing_embs_by_id.setdefault(ex["identity_id"], []).append(ex["embedding"])
 
-    enrolled = 0
     cache_hits = 0
     warnings: list[dict] = []
+    infos: list[dict] = []
     errors: list[dict] = []
     multiface_items: list[dict] = []
+    file_records: list[dict] = []
 
     total = len(file_items)
     for idx, (filename, raw_bytes) in enumerate(file_items, start=1):
@@ -142,12 +242,35 @@ def _enroll_file_list(
                 state.jobs[job_id]["processed"] = idx - 1
                 state.jobs[job_id]["current_file"] = Path(filename).name
 
+        if is_system_file(filename):
+            file_records.append(
+                {
+                    "filename": Path(filename).name or filename,
+                    "display_name": None,
+                    "identity_id": None,
+                    "status": "ignored",
+                    "reason": "System or hidden file ignored.",
+                    "thumb_b64": None,
+                }
+            )
+            continue
+
         parsed = parse_identity_filename(filename)
 
         try:
             loaded = load_image_from_bytes(raw_bytes, filename=filename)
         except ImageLoadError as exc:
             errors.append({"filename": parsed.original_filename, "reason": str(exc)})
+            file_records.append(
+                {
+                    "filename": parsed.original_filename,
+                    "display_name": parsed.display_name,
+                    "identity_id": parsed.identity_key,
+                    "status": "failed",
+                    "reason": str(exc),
+                    "thumb_b64": None,
+                }
+            )
             continue
 
         # Check embedding cache first if persistent caching is enabled
@@ -157,7 +280,11 @@ def _enroll_file_list(
             else None
         )
         if cached is not None:
-            state.db.add_reference_photo(
+            cache_hits += 1
+            crop_b64 = "data:image/jpeg;base64," + base64.b64encode(cached["crop_jpeg"]).decode("ascii")
+            rec = _enroll_single_candidate(
+                state=state,
+                existing_embs_by_id=existing_embs_by_id,
                 identity_id=parsed.identity_key,
                 display_name=parsed.display_name,
                 original_filename=parsed.original_filename,
@@ -166,32 +293,30 @@ def _enroll_file_list(
                 embedding=cached["embedding"],
                 crop_jpeg=cached["crop_jpeg"],
                 quality_dict=cached["quality"],
+                thumb_b64=crop_b64,
                 persist_cache=persist_cache,
+                warnings=warnings,
+                infos=infos,
             )
-            enrolled += 1
-            cache_hits += 1
-            if not cached["quality"].get("passed", True):
-                warnings.append(
-                    {
-                        "filename": parsed.original_filename,
-                        "display_name": parsed.display_name,
-                        "reason": "Quality warning (cached): "
-                        + "; ".join(cached["quality"].get("reasons", [])),
-                    }
-                )
+            file_records.append(rec)
             continue
 
         faces = engine.detect_faces(loaded.bgr)
         if not faces:
-            errors.append(
+            reason = "No face detected in reference photo."
+            errors.append({"filename": parsed.original_filename, "reason": reason})
+            file_records.append(
                 {
                     "filename": parsed.original_filename,
-                    "reason": "No face detected in reference photo.",
+                    "display_name": parsed.display_name,
+                    "identity_id": parsed.identity_key,
+                    "status": "failed",
+                    "reason": reason,
+                    "thumb_b64": render_thumbnail_b64(loaded.bgr),
                 }
             )
             continue
 
-        # Assess quality for all detected faces so tiny/blurry bokeh bystanders don't block clear portraits
         assessed = [
             (
                 face,
@@ -206,39 +331,30 @@ def _enroll_file_list(
             )
             for face in faces
         ]
-        max_area = max(f.bbox[2] * f.bbox[3] for f, _ in assessed)
-        dominant_foreground = [
-            (f, q)
-            for f, q in assessed
-            if q.passed and (f.bbox[2] * f.bbox[3]) >= 0.16 * max_area
-        ]
 
-        if len(faces) > 1 and len(dominant_foreground) == 1:
-            face, quality = dominant_foreground[0]
-            warnings.append(
-                {
-                    "filename": parsed.original_filename,
-                    "display_name": parsed.display_name,
-                    "reason": (
-                        f"Auto-selected dominant portrait ({quality.width_px}x{quality.height_px} px); "
-                        f"ignored {len(faces) - 1} small/blurred background face(s)."
-                    ),
-                }
-            )
-        elif len(faces) > 1:
+        if len(faces) > 1:
+            # Never silently auto-pick: keep in Needs Attention until user confirms a face
             token = uuid.uuid4().hex
+            all_boxes = [f.bbox for f, _ in assessed]
+            # Suggest largest quality-passing face as initial preview highlight only
+            best_idx = max(
+                range(len(assessed)),
+                key=lambda i: (assessed[i][1].passed, assessed[i][0].bbox[2] * assessed[i][0].bbox[3]),
+            )
             candidates_ui = []
             candidates_internal = []
             for f_idx, (face, q) in enumerate(assessed):
                 crop = crop_face_with_margin(loaded.bgr, face.bbox)
                 crop_jpg = encode_jpeg_bytes(crop, quality=88)
                 emb = engine.extract_embedding(loaded.bgr, face)
+                boxed_thumb = render_thumbnail_b64(loaded.bgr, boxes=all_boxes, active_idx=f_idx)
                 candidates_ui.append(
                     {
                         "candidate_index": f_idx,
                         "bbox": list(face.bbox),
                         "crop_b64": "data:image/jpeg;base64,"
                         + base64.b64encode(crop_jpg).decode("ascii"),
+                        "annotated_thumb_b64": boxed_thumb,
                         "quality_passed": q.passed,
                         "quality_reasons": q.reasons,
                     }
@@ -261,25 +377,38 @@ def _enroll_file_list(
                     "persist_cache": persist_cache,
                     "candidates": candidates_internal,
                 }
+            default_thumb = candidates_ui[best_idx]["annotated_thumb_b64"]
             multiface_items.append(
                 {
                     "token": token,
                     "filename": parsed.original_filename,
                     "display_name": parsed.display_name,
                     "face_count": len(faces),
+                    "suggested_index": best_idx,
                     "candidates": candidates_ui,
                 }
             )
+            file_records.append(
+                {
+                    "filename": parsed.original_filename,
+                    "display_name": parsed.display_name,
+                    "identity_id": parsed.identity_key,
+                    "status": "needs_attention",
+                    "reason": f"{len(faces)} faces detected — select target face to enroll.",
+                    "thumb_b64": default_thumb,
+                    "token": token,
+                }
+            )
             continue
-        else:
-            face, quality = assessed[0]
 
+        face, quality = assessed[0]
         emb = engine.extract_embedding(loaded.bgr, face)
         crop = crop_face_with_margin(loaded.bgr, face.bbox)
         crop_jpg = encode_jpeg_bytes(crop, quality=88)
-        q_dict = asdict(quality)
-
-        state.db.add_reference_photo(
+        thumb_b64 = render_thumbnail_b64(crop)
+        rec = _enroll_single_candidate(
+            state=state,
+            existing_embs_by_id=existing_embs_by_id,
             identity_id=parsed.identity_key,
             display_name=parsed.display_name,
             original_filename=parsed.original_filename,
@@ -287,37 +416,37 @@ def _enroll_file_list(
             model_version=engine.model_version,
             embedding=emb,
             crop_jpeg=crop_jpg,
-            quality_dict=q_dict,
+            quality_dict=asdict(quality),
+            thumb_b64=thumb_b64,
             persist_cache=persist_cache,
+            warnings=warnings,
+            infos=infos,
         )
-        enrolled += 1
-
-        if not quality.passed:
-            warnings.append(
-                {
-                    "filename": parsed.original_filename,
-                    "display_name": parsed.display_name,
-                    "reason": "Quality warning (still enrolled): " + "; ".join(quality.reasons),
-                }
-            )
+        file_records.append(rec)
 
     identities = state.db.list_identities()
     exemplars = state.db.load_all_exemplars(engine.model_version)
     calibration = calibrate_from_exemplars(exemplars).to_dict()
-    with state.lock:
-        state.last_calibration = calibration
+    counts = build_health_counts(file_records)
 
     summary = {
         "total_files": total,
-        "enrolled_photos": enrolled,
+        "enrolled_photos": counts["enrolled"] + counts["enrolled_with_warnings"],
         "unique_identities": len(identities),
         "cache_hits": cache_hits,
+        "counts": counts,
+        "file_records": file_records,
+        "infos": infos,
         "warnings": warnings,
         "errors": errors,
         "multiface_pending": multiface_items,
         "calibration": calibration,
         "memory_rss_mb": _memory_rss_mb(),
     }
+
+    with state.lock:
+        state.last_calibration = calibration
+        state.last_enrollment_summary = summary
 
     if job_id:
         with state.lock:
@@ -440,6 +569,22 @@ def _build_session_response(
         if f["status"] == STATUS_LIKELY and f["identity_id"]
     }
 
+    enrolled_ids = {p["identity_id"] for p in identities}
+    with state.lock:
+        not_enrolled_map: dict[str, dict] = {}
+        for pend in state.pending_multiface.values():
+            iid = pend["identity_id"]
+            if iid not in enrolled_ids and iid not in not_enrolled_map:
+                not_enrolled_map[iid] = {
+                    "identity_id": iid,
+                    "display_name": pend["display_name"],
+                    "original_filename": pend["original_filename"],
+                    "status": "Not enrolled",
+                }
+    not_enrolled_identities = sorted(
+        not_enrolled_map.values(), key=lambda x: x["display_name"].lower()
+    )
+
     # Likely matches are NEVER counted as confirmed attendance automatically
     absent_identities = [
         {
@@ -457,6 +602,7 @@ def _build_session_response(
         "unknown": sum(1 for f in faces if f["status"] == STATUS_UNKNOWN),
         "enrolled_total": len(identities),
         "absent_count": len(absent_identities),
+        "not_enrolled_count": len(not_enrolled_identities),
     }
 
     payload = {
@@ -467,6 +613,7 @@ def _build_session_response(
         "faces": faces,
         "summary": summary,
         "absent_identities": absent_identities,
+        "not_enrolled_identities": not_enrolled_identities,
         "identities": identities,
         "calibration": session_obj.get("calibration") or state.last_calibration,
         "memory_rss_mb": _memory_rss_mb(),
@@ -525,11 +672,14 @@ def _read_folder_images_safely(folder_path: str, max_files: int = 500) -> list[t
     if not target.exists() or not target.is_dir():
         raise HTTPException(status_code=400, detail=f"Folder not found: {target}")
 
-    entries = sorted(p for p in target.iterdir() if not p.name.startswith("."))
+    entries = sorted(target.iterdir())
     file_items: list[tuple[str, bytes]] = []
     for entry in entries:
         if len(file_items) >= max_files:
             break
+        if is_system_file(entry.name):
+            file_items.append((entry.name, b""))
+            continue
         try:
             resolved_entry = entry.resolve(strict=True)
         except OSError:
@@ -541,6 +691,96 @@ def _read_folder_images_safely(folder_path: str, max_files: int = 500) -> list[t
     if not file_items:
         raise HTTPException(status_code=400, detail="No readable files found in that folder.")
     return file_items
+
+
+def _apply_multiface_resolution(
+    state: AppState,
+    token: str,
+    candidate_index: int | None,
+) -> dict:
+    """Resolve a pending multi-face reference photo and refresh health counts + calibration."""
+    with state.lock:
+        pending = state.pending_multiface.pop(token, None)
+    if pending is None:
+        raise HTTPException(status_code=404, detail="Multi-face selection token expired or invalid.")
+
+    engine = _require_engine(state)
+    summary = state.last_enrollment_summary
+    new_record: dict | None = None
+    outcome_status = "skipped"
+
+    if candidate_index is None:
+        new_record = {
+            "filename": pending["original_filename"],
+            "display_name": pending["display_name"],
+            "identity_id": pending["identity_id"],
+            "status": "ignored",
+            "reason": "Skipped by user during multi-face review.",
+            "thumb_b64": None,
+        }
+    else:
+        candidates = pending["candidates"]
+        if candidate_index < 0 or candidate_index >= len(candidates):
+            with state.lock:
+                state.pending_multiface[token] = pending
+            raise HTTPException(status_code=400, detail="Invalid candidate face index.")
+
+        chosen = candidates[candidate_index]
+        existing_embs_by_id: dict[str, list[np.ndarray]] = {}
+        for ex in state.db.load_all_exemplars(engine.model_version):
+            existing_embs_by_id.setdefault(ex["identity_id"], []).append(ex["embedding"])
+
+        crop_b64 = "data:image/jpeg;base64," + base64.b64encode(chosen["crop_jpeg"]).decode("ascii")
+        warnings_list: list[dict] = summary["warnings"] if summary else []
+        infos_list: list[dict] = summary["infos"] if summary else []
+        new_record = _enroll_single_candidate(
+            state=state,
+            existing_embs_by_id=existing_embs_by_id,
+            identity_id=pending["identity_id"],
+            display_name=pending["display_name"],
+            original_filename=pending["original_filename"],
+            image_sha256=pending["image_sha256"],
+            model_version=pending["model_version"],
+            embedding=chosen["embedding"],
+            crop_jpeg=chosen["crop_jpeg"],
+            quality_dict=chosen["quality"],
+            thumb_b64=crop_b64,
+            persist_cache=pending["persist_cache"],
+            warnings=warnings_list,
+            infos=infos_list,
+        )
+        outcome_status = new_record["status"]
+
+    identities = state.db.list_identities()
+    exemplars = state.db.load_all_exemplars(engine.model_version)
+    calibration = calibrate_from_exemplars(exemplars).to_dict()
+
+    if summary is not None:
+        records = summary["file_records"]
+        for i, rec in enumerate(records):
+            if rec.get("token") == token:
+                records[i] = new_record
+                break
+        summary["multiface_pending"] = [
+            m for m in summary["multiface_pending"] if m["token"] != token
+        ]
+        counts = build_health_counts(records)
+        summary["counts"] = counts
+        summary["enrolled_photos"] = counts["enrolled"] + counts["enrolled_with_warnings"]
+        summary["unique_identities"] = len(identities)
+        summary["calibration"] = calibration
+        summary["memory_rss_mb"] = _memory_rss_mb()
+
+    with state.lock:
+        state.last_calibration = calibration
+        state.last_enrollment_summary = summary
+
+    return {
+        "status": outcome_status,
+        "display_name": pending["display_name"],
+        "identities": identities,
+        "summary": summary,
+    }
 
 
 def _start_enroll_job(
@@ -697,35 +937,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
 
     @app.post("/api/enroll/resolve-multiface")
     def resolve_multiface(req: ResolveMultiFaceRequest):
-        with state.lock:
-            pending = state.pending_multiface.pop(req.token, None)
-        if pending is None:
-            raise HTTPException(status_code=404, detail="Multi-face selection token expired or invalid.")
-
-        if req.candidate_index is None:
-            return {"status": "skipped", "identities": state.db.list_identities()}
-
-        candidates = pending["candidates"]
-        if req.candidate_index < 0 or req.candidate_index >= len(candidates):
-            raise HTTPException(status_code=400, detail="Invalid candidate face index.")
-
-        chosen = candidates[req.candidate_index]
-        state.db.add_reference_photo(
-            identity_id=pending["identity_id"],
-            display_name=pending["display_name"],
-            original_filename=pending["original_filename"],
-            image_sha256=pending["image_sha256"],
-            model_version=pending["model_version"],
-            embedding=chosen["embedding"],
-            crop_jpeg=chosen["crop_jpeg"],
-            quality_dict=chosen["quality"],
-            persist_cache=pending["persist_cache"],
-        )
-        return {
-            "status": "enrolled",
-            "display_name": pending["display_name"],
-            "identities": state.db.list_identities(),
-        }
+        return _apply_multiface_resolution(state, req.token, req.candidate_index)
 
     @app.post("/api/identify")
     async def identify_group_photo(
@@ -904,6 +1116,20 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         enroll_summary = await loop.run_in_executor(
             state.executor, _enroll_file_list, state, file_items, True, False, None
         )
+        # In one-click Demo Mode only, resolve demo multi-face bokeh items with suggested foreground face
+        auto_resolved = list(enroll_summary.get("multiface_pending", []))
+        for pending in auto_resolved:
+            res = _apply_multiface_resolution(state, pending["token"], pending["suggested_index"])
+            if res.get("summary"):
+                enroll_summary = res["summary"]
+        demo_note = (
+            f"Demo: dominant face auto-selected for {len(auto_resolved)} photo"
+            + ("s" if len(auto_resolved) != 1 else "")
+            if auto_resolved
+            else None
+        )
+        if demo_note:
+            enroll_summary["demo_note"] = demo_note
         identify_result = await loop.run_in_executor(
             state.executor,
             _identify_group_image,
@@ -913,6 +1139,8 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             DEFAULT_THRESHOLDS,
         )
         identify_result["demo_enrollment"] = enroll_summary
+        if demo_note:
+            identify_result["demo_note"] = demo_note
         return identify_result
 
     @app.post("/api/wipe")
@@ -923,6 +1151,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             state.pending_multiface.clear()
             state.jobs.clear()
             state.last_calibration = None
+            state.last_enrollment_summary = None
         return {"status": "wiped", "deleted": counts}
 
     if STATIC_DIR.is_dir():

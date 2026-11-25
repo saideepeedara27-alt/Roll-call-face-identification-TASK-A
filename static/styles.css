@@ -189,6 +189,29 @@ body {
   font-weight: 600;
 }
 
+.warn-banner {
+  padding: 8px 18px;
+  background: var(--likely-bg);
+  color: var(--likely);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.warn-banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.info-banner {
+  padding: 7px 18px;
+  background: var(--surface-alt);
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .toast-area {
   position: fixed;
   bottom: 18px;
@@ -636,18 +659,79 @@ body {
   margin-bottom: 10px;
   background: var(--surface-alt);
 }
-.multiface-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.multiface-layout { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; align-items: flex-start; }
+.multiface-preview {
+  width: 128px;
+  height: 128px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.multiface-controls { flex: 1; min-width: 200px; }
+.multiface-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.multiface-actions { display: flex; gap: 8px; }
 .candidate-btn {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: 8px;
-  padding: 6px;
+  padding: 5px;
   cursor: pointer;
   text-align: center;
   color: var(--text);
+  font-size: 11px;
 }
 .candidate-btn:hover { border-color: var(--accent); }
-.candidate-btn img { width: 64px; height: 64px; object-fit: cover; border-radius: 5px; display: block; margin-bottom: 4px; }
+.candidate-btn.active { border: 2px solid var(--accent); }
+.candidate-btn img { width: 52px; height: 52px; object-fit: cover; border-radius: 5px; display: block; margin-bottom: 3px; }
+
+.health-headline { font-weight: 700; font-size: 13px; margin-bottom: 8px; }
+.health-filters { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.health-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 210px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+.health-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.health-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface-alt);
+}
+.health-thumb-ph {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: var(--surface-alt);
+  border: 1px dashed var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.health-row-main { flex: 1; min-width: 0; }
+.health-row-title { font-weight: 600; font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.health-row-reason { font-size: 11px; color: var(--text-muted); display: block; }
+.badge-enrolled { background: var(--confirmed-bg); color: var(--confirmed); }
+.badge-enrolled_with_warnings, .badge-needs_attention { background: var(--likely-bg); color: var(--likely); }
+.badge-failed { background: var(--unknown-bg); color: var(--unknown); }
+.badge-ignored { background: var(--surface-alt); color: var(--text-muted); border: 1px solid var(--border); }
 
 .roster-preview h3 { font-size: 13px; margin: 0 0 8px; }
 .roster-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 180px; overflow-y: auto; }

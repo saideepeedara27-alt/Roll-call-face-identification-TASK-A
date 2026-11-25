@@ -60,6 +60,14 @@
   </header>
 
   <div id="model-alert" class="alert-banner hidden" role="alert"></div>
+  <div id="pending-attention-banner" class="warn-banner hidden" role="status">
+    <span id="pending-attention-text"></span>
+    <div class="warn-banner-actions">
+      <button type="button" id="btn-banner-pick-faces" class="btn btn-sm btn-secondary">Pick Faces</button>
+      <button type="button" id="btn-banner-continue" class="btn btn-sm btn-ghost">Continue without them</button>
+    </div>
+  </div>
+  <div id="demo-note-banner" class="info-banner hidden" role="status"></div>
   <div id="toast-area" class="toast-area" aria-live="polite"></div>
 
   <main class="workbench" role="main">
