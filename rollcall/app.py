@@ -20,6 +20,7 @@ import psutil
 from rollcall.calibration import calibrate_from_exemplars
 from rollcall.config import (
     DEFAULT_THRESHOLDS,
+    MAX_REF_IMAGE_DIMENSION,
     PRACTICE_DATA_DIR,
     RecognitionThresholds,
     STATIC_DIR,
@@ -53,7 +54,11 @@ from rollcall.matcher import (
     STATUS_UNKNOWN,
     match_group_faces,
 )
-from rollcall.second_look import run_manual_box_detection, run_tiled_second_look
+from rollcall.second_look import (
+    run_manual_box_detection,
+    run_tiled_second_look,
+    suppress_artifact_detections,
+)
 from rollcall.self_check import run_startup_self_check
 
 
@@ -354,7 +359,11 @@ def _enroll_file_list(
         parsed = parse_identity_filename(filename)
 
         try:
-            loaded = load_image_from_bytes(raw_bytes, filename=filename)
+            loaded = load_image_from_bytes(
+                raw_bytes,
+                filename=filename,
+                max_dimension=MAX_REF_IMAGE_DIMENSION,
+            )
         except ImageLoadError as exc:
             errors.append({"filename": parsed.original_filename, "reason": str(exc)})
             file_records.append(
@@ -405,7 +414,11 @@ def _enroll_file_list(
                 file_records.append(rec)
             continue
 
-        faces = engine.detect_faces(loaded.bgr)
+        raw_faces = engine.detect_faces(loaded.bgr)
+        faces = suppress_artifact_detections(
+            raw_faces,
+            min_score=thresholds.min_detector_score,
+        )
         if not faces:
             reason = "No face detected in reference photo."
             errors.append({"filename": parsed.original_filename, "reason": reason})
@@ -431,6 +444,7 @@ def _enroll_file_list(
                     thresholds.min_face_size_px,
                     thresholds.min_blur_laplacian,
                     thresholds.min_detector_score,
+                    size_scale=loaded.scale_factor,
                 ),
             )
             for face in faces
@@ -606,7 +620,10 @@ def _identify_group_image(
     with state.lock:
         state.last_calibration = calibration.to_dict()
 
-    detected = engine.detect_faces(loaded.bgr)
+    detected = suppress_artifact_detections(
+        engine.detect_faces(loaded.bgr),
+        min_score=None,
+    )
     match_inputs: list[FaceMatchInput] = []
 
     for f_idx, face in enumerate(detected):

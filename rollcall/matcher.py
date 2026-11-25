@@ -135,13 +135,13 @@ def _decide_single_face(
             identity_id=None,
             display_name=STATUS_UNKNOWN,
             similarity=round(top1.similarity, 4),
-            runner_up_name=top1.display_name,
-            runner_up_similarity=round(top1.similarity, 4),
+            runner_up_name=top2.display_name if top2 else None,
+            runner_up_similarity=round(top2.similarity, 4) if top2 else None,
             runner_up_margin=round(margin, 4) if margin is not None else None,
             matched_photo_id=None,
             decision_reason=(
-                f"Best similarity ({top1.similarity:.3f}) is below minimum threshold "
-                f"({thresholds.similarity_low:.3f})."
+                f"Best similarity ({top1.similarity:.3f}, closest: {top1.display_name}) "
+                f"is below minimum threshold ({thresholds.similarity_low:.3f})."
             ),
             quality=face.quality,
             crop_b64=face.crop_b64,

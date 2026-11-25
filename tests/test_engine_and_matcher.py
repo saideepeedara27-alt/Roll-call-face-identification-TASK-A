@@ -137,3 +137,28 @@ def test_hungarian_never_upgrades_weak_or_likely_match():
     results = match_group_faces(faces, exemplars, thresholds)
     assert results[0].status == STATUS_CONFIRMED
     assert results[1].status == STATUS_UNKNOWN  # Collision resolved to dummy unknown
+
+
+def test_unknown_below_threshold_keeps_runner_up_distinct_from_top1():
+    v1 = np.zeros(128, dtype=np.float32)
+    v2 = np.zeros(128, dtype=np.float32)
+    v3 = np.zeros(128, dtype=np.float32)
+    v1[0], v2[1], v3[2] = 1.0, 1.0, 1.0
+    # Probe has sim 0.2413 to Alice (top1) and 0.1574 to Bob (top2), both below T_low=0.50 -> margin = 0.0839
+    probe = 0.2413 * v1 + 0.1574 * v2 + np.sqrt(max(0.0, 1.0 - 0.2413**2 - 0.1574**2)) * v3
+    probe = probe / np.linalg.norm(probe)
+
+    exemplars = [
+        {"photo_id": 1, "identity_id": "alice", "display_name": "Alice", "original_filename": "Alice.jpg", "embedding": v1},
+        {"photo_id": 2, "identity_id": "bob", "display_name": "Bob", "original_filename": "Bob.jpg", "embedding": v2},
+    ]
+    thresholds = RecognitionThresholds(similarity_low=0.50, similarity_high=0.56)
+    res = match_group_faces([FaceMatchInput(0, (0, 0, 80, 80), _good_quality(), probe, "")], exemplars, thresholds)[0]
+
+    assert res.status == STATUS_UNKNOWN
+    assert res.display_name == STATUS_UNKNOWN
+    assert abs(res.similarity - 0.2413) < 1e-3
+    assert res.runner_up_name == "Bob"
+    assert abs(res.runner_up_similarity - 0.1574) < 1e-3
+    assert abs((res.similarity - res.runner_up_similarity) - res.runner_up_margin) < 1e-3
+    assert "closest: Alice" in res.decision_reason

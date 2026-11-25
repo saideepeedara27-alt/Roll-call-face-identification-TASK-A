@@ -47,6 +47,50 @@ def is_duplicate_box(
     return False
 
 
+def compute_containment_ratio(
+    box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]
+) -> float:
+    """Fraction of the smaller box overlapped by the larger/other box."""
+    ax1, ay1, aw, ah = box_a
+    bx1, by1, bw, bh = box_b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax1 + aw, bx1 + bw), min(ay1 + ah, by1 + bh)
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    min_area = max(1, min(aw * ah, bw * bh))
+    return inter / float(min_area)
+
+
+ARTIFACT_IOU_THRESHOLD = 0.25
+ARTIFACT_CONTAINMENT_THRESHOLD = 0.40
+
+
+def suppress_artifact_detections(
+    faces: list[DetectedFace],
+    min_score: float | None = None,
+    iou_threshold: float = ARTIFACT_IOU_THRESHOLD,
+    contain_threshold: float = ARTIFACT_CONTAINMENT_THRESHOLD,
+) -> list[DetectedFace]:
+    """Keep top detection and drop overlapping/contained or weak (< min_score) secondary boxes."""
+    if not faces:
+        return []
+    ranked = sorted(faces, key=lambda f: f.score, reverse=True)
+    kept: list[DetectedFace] = [ranked[0]]
+    for cand in ranked[1:]:
+        if min_score is not None and cand.score < min_score:
+            continue
+        if any(
+            compute_iou(cand.bbox, prev.bbox) > iou_threshold
+            or compute_containment_ratio(cand.bbox, prev.bbox) > contain_threshold
+            for prev in kept
+        ):
+            continue
+        kept.append(cand)
+    kept.sort(key=lambda f: (f.bbox[0], f.bbox[1]))
+    return kept
+
+
 def compute_tile_windows(
     width: int, height: int, overlap_ratio: float = TILE_OVERLAP_RATIO
 ) -> tuple[str, list[tuple[int, int, int, int]]]:

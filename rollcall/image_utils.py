@@ -24,6 +24,9 @@ class LoadedImage:
     height: int
     sha256: str
     was_resized: bool
+    original_width: int = 0
+    original_height: int = 0
+    scale_factor: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -76,15 +79,18 @@ def load_image_from_bytes(
             f"Could not decode '{Path(filename).name}' as a valid image."
         ) from exc
 
-    width, height = rgb_img.size
+    orig_w, orig_h = rgb_img.size
+    width, height = orig_w, orig_h
     was_resized = False
-    if max(width, height) > max_dimension:
-        scale = max_dimension / float(max(width, height))
-        new_w = max(1, int(round(width * scale)))
-        new_h = max(1, int(round(height * scale)))
+    scale_factor = 1.0
+    if max(orig_w, orig_h) > max_dimension:
+        scale = max_dimension / float(max(orig_w, orig_h))
+        new_w = max(1, int(round(orig_w * scale)))
+        new_h = max(1, int(round(orig_h * scale)))
         rgb_img = rgb_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         width, height = new_w, new_h
         was_resized = True
+        scale_factor = new_w / float(max(1, orig_w))
 
     rgb_arr = np.asarray(rgb_img, dtype=np.uint8)
     bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
@@ -94,6 +100,9 @@ def load_image_from_bytes(
         height=height,
         sha256=sha256,
         was_resized=was_resized,
+        original_width=orig_w,
+        original_height=orig_h,
+        scale_factor=scale_factor,
     )
 
 
@@ -104,8 +113,9 @@ def assess_face_quality(
     min_face_size_px: int,
     min_blur_laplacian: float,
     min_detector_score: float,
+    size_scale: float = 1.0,
 ) -> FaceQualityReport:
-    """Compute size, blur, lighting, and detector confidence metrics for a face."""
+    """Compute size (in original pixels when scaled), blur, lighting, and confidence metrics."""
     x, y, w, h = bbox
     img_h, img_w = bgr_image.shape[:2]
     x1 = max(0, x)
@@ -129,11 +139,13 @@ def assess_face_quality(
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     blur_laplacian = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     brightness_mean = float(gray.mean())
-    min_side = min(w, h)
+    orig_w_px = max(1, int(round(w / size_scale))) if 0.0 < size_scale < 1.0 else w
+    orig_h_px = max(1, int(round(h / size_scale))) if 0.0 < size_scale < 1.0 else h
+    min_side = min(orig_w_px, orig_h_px)
 
     reasons: list[str] = []
     if min_side < min_face_size_px:
-        reasons.append(f"Face too small ({w}x{h} px < {min_face_size_px} px)")
+        reasons.append(f"Face too small ({orig_w_px}x{orig_h_px} px < {min_face_size_px} px)")
     if blur_laplacian < min_blur_laplacian:
         reasons.append(f"Blurry face (sharpness {blur_laplacian:.1f} < {min_blur_laplacian:.1f})")
     if detector_score < 0.35:
@@ -148,8 +160,8 @@ def assess_face_quality(
         reasons.append(f"low detector score ({detector_score:.2f} < {min_detector_score:.2f})")
 
     return FaceQualityReport(
-        width_px=w,
-        height_px=h,
+        width_px=orig_w_px,
+        height_px=orig_h_px,
         min_side_px=min_side,
         blur_laplacian=round(blur_laplacian, 2),
         brightness_mean=round(brightness_mean, 1),

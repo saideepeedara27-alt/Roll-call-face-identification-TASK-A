@@ -17,7 +17,8 @@ MODEL_VERSION_TAG = "yunet_2023mar+sface_2021dec"
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file
-MAX_IMAGE_DIMENSION = 2400  # Cap longest side to protect 8 GB unified RAM
+MAX_IMAGE_DIMENSION = 2400  # Cap longest side on group photos to protect 8 GB unified RAM
+MAX_REF_IMAGE_DIMENSION = 1200  # Pre-scale reference portraits so YuNet avoids giant-face splits
 
 
 @dataclass(frozen=True)

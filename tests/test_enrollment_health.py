@@ -185,7 +185,7 @@ def test_demo_mode_reports_auto_selection_note(tmp_path):
     resp = client.post("/api/demo")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["demo_note"] == "Demo: dominant face auto-selected for 2 photos"
+    assert data["demo_note"] == "Demo: dominant face auto-selected for 1 photo"
     assert data["summary"]["enrolled_total"] == 6
 
 
@@ -319,3 +319,65 @@ def _make_solid_tag_png(r_val: int) -> bytes:
     buf = BytesIO()
     Image.fromarray(arr).save(buf, format="PNG")
     return buf.getvalue()
+
+
+def test_closeup_3000x4000_single_face_two_face_multiface_and_group_no_duplicate(tmp_path):
+    """Real YuNet regression check for close-up double-detection suppression and original-pixel size gate."""
+    from rollcall.config import PRACTICE_DATA_DIR
+
+    db = RollCallDB(db_path=tmp_path / "closeup_dedup.db")
+    app = create_app(db=db)  # real YuNet + SFace engine
+    client = TestClient(app)
+
+    # 1) Ananya Rao.jpg upscaled to 3000x4000 (previously double-detected at 1800x2400) -> must enroll single-face
+    ananya_src = PRACTICE_DATA_DIR / "reference" / "Ananya Rao.jpg"
+    with Image.open(ananya_src) as im:
+        big_ananya = im.resize((3000, 4000), Image.Resampling.BICUBIC)
+        buf_ananya = BytesIO()
+        big_ananya.save(buf_ananya, format="JPEG", quality=90)
+        ananya_3000_bytes = buf_ananya.getvalue()
+
+    # 2) Genuine two-person reference photo (Rahul + Vikram side by side) -> must stay in needs_attention
+    rahul_src = PRACTICE_DATA_DIR / "reference" / "Rahul Verma.jpg"
+    vikram_src = PRACTICE_DATA_DIR / "reference" / "Vikram Patel.jpg"
+    with Image.open(rahul_src) as im_r, Image.open(vikram_src) as im_v:
+        two_face = Image.new("RGB", (2048, 1024))
+        two_face.paste(im_r, (0, 0))
+        two_face.paste(im_v, (1024, 0))
+        buf_two = BytesIO()
+        two_face.save(buf_two, format="JPEG", quality=90)
+        two_face_bytes = buf_two.getvalue()
+
+    enroll_resp = client.post(
+        "/api/enroll",
+        files=[
+            ("files", ("Ananya Rao.jpg", ananya_3000_bytes, "image/jpeg")),
+            ("files", ("Double Friend.jpg", two_face_bytes, "image/jpeg")),
+        ],
+    )
+    assert enroll_resp.status_code == 200
+    summary = _poll_enroll(client, enroll_resp.json()["job_id"])
+    recs = {r["filename"]: r for r in summary["file_records"]}
+
+    assert recs["Ananya Rao.jpg"]["status"] == "enrolled"
+    assert summary["unique_identities"] == 1
+    # Face size measured in original 3000x4000 pixels (~700+ px), NOT pre-scaled 900x1200 pixels
+    ananya_ex = [e for e in db.load_all_exemplars("yunet_2023mar+sface_2021dec") if e["identity_id"] == "ananya_rao"][0]
+    assert ananya_ex["quality"]["width_px"] > 600
+    assert ananya_ex["quality"]["height_px"] > 700
+
+    assert recs["Double Friend.jpg"]["status"] == "needs_attention"
+    assert len(summary["multiface_pending"]) == 1
+
+    # 3) Group photo (4000x3000 landscape) containing a large close-up face -> no duplicate box on first pass
+    with Image.open(ananya_src) as im:
+        grp = Image.new("RGB", (4000, 3000), (210, 214, 220))
+        grp.paste(im.resize((1800, 2400), Image.Resampling.BICUBIC), (1100, 300))
+        buf_grp = BytesIO()
+        grp.save(buf_grp, format="JPEG", quality=90)
+        grp_bytes = buf_grp.getvalue()
+
+    ident = client.post("/api/identify", files={"file": ("big_group.jpg", grp_bytes, "image/jpeg")}).json()
+    assert ident["summary"]["total_detected"] == 1
+    assert ident["faces"][0]["display_name"] == "Ananya Rao"
+    assert ident["faces"][0]["status"] == "Confirmed"

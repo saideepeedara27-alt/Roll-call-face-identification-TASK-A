@@ -770,11 +770,16 @@ function updateSummaryAndList() {
     const origSub = face.manually_corrected
       ? ` • Orig: ${face.original_display_name}`
       : "";
+    const runnerLine =
+      face.status === "Likely" && face.runner_up_name
+        ? `<span class="face-card-sub">vs ${escapeHtml(face.runner_up_name)} (${face.runner_up_similarity !== null ? face.runner_up_similarity.toFixed(3) : "—"})${face.runner_up_margin !== null ? ` &bull; &Delta; +${face.runner_up_margin.toFixed(3)}` : ""}</span>`
+        : "";
     btn.innerHTML = `
       <img class="face-thumb" src="${face.crop_b64}" alt="Face #${face.face_index + 1}" />
       <div class="face-card-main">
         <span class="face-card-name">#${face.face_index + 1} ${escapeHtml(face.display_name)}</span>
         <span class="face-card-sub">${simTxt} &bull; ${face.quality.width_px}×${face.quality.height_px}px${escapeHtml(origSub)}</span>
+        ${runnerLine}
       </div>
       <span class="status-badge badge-${statusCssClass(face.status)}">${badgeLabel}</span>
     `;
@@ -847,7 +852,7 @@ function renderExplainabilityPanel() {
   }
 
   el("explain-runnerup").textContent = face.runner_up_name
-    ? `Runner-up candidate: ${face.runner_up_name} (${face.runner_up_similarity?.toFixed(4) ?? "—"})`
+    ? `Runner-up candidate: ${face.runner_up_name} (${face.runner_up_similarity?.toFixed(4) ?? "—"})${face.runner_up_margin !== null ? ` • Margin Δ +${face.runner_up_margin.toFixed(4)}` : ""}`
     : "No runner-up candidate above floor.";
   el("explain-reason").textContent = face.decision_reason;
 
