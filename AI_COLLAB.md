@@ -2,7 +2,7 @@
 
 This document records how the author (**Saideep**, final-year B.Tech CSE Data Science student) steered the AI coding assistant through architecture, matching logic, UX, testing, and evaluation for **PhotoProof**, with verbatim evidence and a complete chat-history export inventory.
 
-> **Attribution Transparency Note:** Decisions **1–4** originated from structured Checkpoint 1–4 reviews pasted into session Turns 0–36 — those are explicitly flagged below so you can double-check any nuance against your earlier browser brainstorming chat before submission. Decisions **5–10** come 100% directly from your prompts and code reviews in this recorded Antigravity session.
+> **Attribution Transparency Note:** Decisions **1–4** originated from structured Checkpoint 1–4 reviews pasted into session Turns 0–36 — those are explicitly flagged below so you can double-check any nuance against your earlier browser brainstorming chat before submission. Decisions **5–12** come 100% directly from your prompts and code reviews in this recorded Antigravity session.
 
 ---
 

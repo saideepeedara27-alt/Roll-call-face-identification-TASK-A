@@ -8,7 +8,7 @@ PhotoProof runs strictly on `127.0.0.1` as a self-contained local web workbench 
 
 ## 1. Architecture Diagram (Generated with Archify)
 
-The architecture diagram below was authored directly from committed repository evidence (`HEAD` `afd820095b45c31ef78c44add943b09de20c059a`) and validated through **Archify v3.3.1** (`validate`, `deliver`, `check`, and `browser-check` gates passing with 14 repository source citations):
+The architecture diagram below was authored directly from committed repository evidence (`HEAD` `58c9c5fcfabb19d2baa0b45f350966beb5b9412d`) and validated through **Archify v3.3.1** (`validate`, `deliver`, `check`, and `browser-check` gates passing with 14 repository source citations):
 
 ![PhotoProof System Architecture](docs/photoproof-architecture.svg)
 
