@@ -293,6 +293,33 @@ body {
 .photo-canvas:active { cursor: grabbing; }
 .photo-canvas.draw-mode { cursor: crosshair; }
 
+.coverage-map-card {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 192px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px;
+  box-shadow: var(--shadow);
+  z-index: 10;
+}
+.coverage-map-canvas {
+  width: 176px;
+  height: 104px;
+  display: block;
+  border-radius: 5px;
+  background: var(--surface-alt);
+  cursor: pointer;
+}
+.coverage-caption {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+
 .empty-dropzone {
   padding: 28px;
   max-width: 520px;

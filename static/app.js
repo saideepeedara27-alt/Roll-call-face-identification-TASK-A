@@ -18,6 +18,7 @@ const state = {
   panStartY: 0,
   didDrag: false,
   loadedImage: null,
+  coverageMapOpen: window.innerWidth > 960,
 };
 
 function statusCssClass(status) {
@@ -484,12 +485,14 @@ function loadSessionIntoUI(data) {
   const timeTxt = data.processing_time_ms ? `${data.processing_time_ms} ms` : "";
   el("photo-meta").textContent = `${data.width}×${data.height}px ${timeTxt ? "• " + timeTxt : ""} • RAM: ${data.memory_rss_mb} MB`;
 
+  state.coverageMapOpen = window.innerWidth > 960;
   [
     "btn-second-look",
     "btn-draw-box",
     "btn-zoom-out",
     "btn-zoom-in",
     "btn-zoom-reset",
+    "btn-toggle-map",
     "btn-export-png",
     "btn-export-csv",
   ].forEach((id) => {
@@ -1005,6 +1008,117 @@ function drawCanvas() {
     );
     ctx.restore();
   }
+
+  drawCoverageMap(m);
+}
+
+function getCoverageMapMetrics() {
+  const mapCanvas = el("coverage-map-canvas");
+  const img = state.loadedImage;
+  if (!mapCanvas || !img) return null;
+  const mw = mapCanvas.width;
+  const mh = mapCanvas.height;
+  const mapScale = Math.min(mw / img.width, mh / img.height);
+  const drawW = img.width * mapScale;
+  const drawH = img.height * mapScale;
+  const offX = (mw - drawW) / 2;
+  const offY = (mh - drawH) / 2;
+  return { mapCanvas, img, mapScale, drawW, drawH, offX, offY };
+}
+
+function drawCoverageMarkerShape(ctx, status, cx, cy, r) {
+  ctx.beginPath();
+  if (status === "Confirmed") {
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  } else if (status === "Confirmed by reviewer") {
+    ctx.moveTo(cx, cy - r * 1.2);
+    ctx.lineTo(cx + r * 1.2, cy);
+    ctx.lineTo(cx, cy + r * 1.2);
+    ctx.lineTo(cx - r * 1.2, cy);
+    ctx.closePath();
+  } else if (status === "Likely") {
+    ctx.moveTo(cx, cy - r * 1.2);
+    ctx.lineTo(cx + r * 1.1, cy + r);
+    ctx.lineTo(cx - r * 1.1, cy + r);
+    ctx.closePath();
+  } else {
+    ctx.rect(cx - r, cy - r, r * 2, r * 2);
+  }
+  ctx.fill();
+}
+
+function drawCoverageMap(mainMetrics) {
+  const card = el("coverage-map-card");
+  const mapBtn = el("btn-toggle-map");
+  if (!state.session || !state.loadedImage) {
+    card.classList.add("hidden");
+    mapBtn.classList.remove("btn-queue-active");
+    return;
+  }
+  mapBtn.classList.toggle("btn-queue-active", state.coverageMapOpen);
+  card.classList.toggle("hidden", !state.coverageMapOpen);
+  if (!state.coverageMapOpen) return;
+
+  const mm = getCoverageMapMetrics();
+  if (!mm) return;
+  const ctx = mm.mapCanvas.getContext("2d");
+  ctx.clearRect(0, 0, mm.mapCanvas.width, mm.mapCanvas.height);
+  ctx.drawImage(mm.img, mm.offX, mm.offY, mm.drawW, mm.drawH);
+
+  // Viewport rectangle inside preserved-aspect photo bounds
+  if (mainMetrics) {
+    const vx0 = Math.max(0, (0 - mainMetrics.offsetX) / mainMetrics.scale);
+    const vy0 = Math.max(0, (0 - mainMetrics.offsetY) / mainMetrics.scale);
+    const vx1 = Math.min(mm.img.width, (mainMetrics.canvas.width - mainMetrics.offsetX) / mainMetrics.scale);
+    const vy1 = Math.min(mm.img.height, (mainMetrics.canvas.height - mainMetrics.offsetY) / mainMetrics.scale);
+    if (vx1 > vx0 && vy1 > vy0) {
+      ctx.save();
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 1.5;
+      ctx.fillStyle = "rgba(37, 99, 235, 0.10)";
+      const rx = mm.offX + vx0 * mm.mapScale;
+      const ry = mm.offY + vy0 * mm.mapScale;
+      const rw = (vx1 - vx0) * mm.mapScale;
+      const rh = (vy1 - vy0) * mm.mapScale;
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.restore();
+    }
+  }
+
+  const palette = {
+    Confirmed: "#10b981",
+    "Confirmed by reviewer": "#0d9488",
+    Likely: "#f59e0b",
+    unknown: "#ef4444",
+  };
+
+  for (const face of state.session.faces) {
+    if (face.removed) continue;
+    const [bx, by, bw, bh] = face.bbox;
+    const cx = mm.offX + (bx + bw / 2) * mm.mapScale;
+    const cy = mm.offY + (by + bh / 2) * mm.mapScale;
+    const isSelected = face.face_index === state.selectedFaceIndex;
+
+    ctx.save();
+    ctx.fillStyle = palette[face.status] || "#94a3b8";
+    drawCoverageMarkerShape(ctx, face.status, cx, cy, isSelected ? 4.5 : 3.5);
+    if (isSelected) {
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.font = "700 8px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 2;
+    const numTxt = String(face.face_index + 1);
+    ctx.strokeText(numTxt, cx + 5, cy + 3);
+    ctx.fillText(numTxt, cx + 5, cy + 3);
+    ctx.restore();
+  }
 }
 
 function updateFilterChips() {
@@ -1119,9 +1233,10 @@ function bindEvents() {
       el("pending-attention-banner").classList.add("hidden");
       el("demo-note-banner").classList.add("hidden");
       el("warning-dot").classList.add("hidden");
-      ["btn-second-look", "btn-draw-box", "btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-export-png", "btn-export-csv"].forEach(
+      ["btn-second-look", "btn-draw-box", "btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-toggle-map", "btn-export-png", "btn-export-csv"].forEach(
         (id) => { el(id).disabled = true; }
       );
+      el("coverage-map-card").classList.add("hidden");
       closeModal("wipe-modal");
       await refreshIdentities();
       updateSummaryAndList();
@@ -1215,6 +1330,53 @@ function bindEvents() {
     drawCanvas();
   });
   el("btn-zoom-reset").addEventListener("click", resetZoom);
+  el("btn-toggle-map").addEventListener("click", () => {
+    if (!state.session) return;
+    state.coverageMapOpen = !state.coverageMapOpen;
+    drawCanvas();
+  });
+
+  el("coverage-map-canvas").addEventListener("click", (e) => {
+    if (!state.session || !state.loadedImage) return;
+    const mm = getCoverageMapMetrics();
+    if (!mm) return;
+    const rect = mm.mapCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // 1. Hit-test active markers (skip removed manual boxes)
+    let bestFace = null;
+    let bestDist = 11;
+    for (const face of state.session.faces) {
+      if (face.removed) continue;
+      const [bx, by, bw, bh] = face.bbox;
+      const fx = mm.offX + (bx + bw / 2) * mm.mapScale;
+      const fy = mm.offY + (by + bh / 2) * mm.mapScale;
+      const dist = Math.hypot(mx - fx, my - fy);
+      if (dist <= bestDist) {
+        bestDist = dist;
+        bestFace = face;
+      }
+    }
+    if (bestFace) {
+      selectFace(bestFace.face_index);
+      return;
+    }
+
+    // 2. Otherwise pan main canvas to clicked photo location
+    const mainM = getCanvasMetrics();
+    if (!mainM) return;
+    const targetImgX = (mx - mm.offX) / mm.mapScale;
+    const targetImgY = (my - mm.offY) / mm.mapScale;
+    if (targetImgX < 0 || targetImgX > mm.img.width || targetImgY < 0 || targetImgY > mm.img.height) {
+      return;
+    }
+    const baseDrawW = mm.img.width * mainM.scale;
+    const baseDrawH = mm.img.height * mainM.scale;
+    state.panX = mainM.canvas.width / 2 - ((mainM.canvas.width - baseDrawW) / 2 + targetImgX * mainM.scale);
+    state.panY = mainM.canvas.height / 2 - ((mainM.canvas.height - baseDrawH) / 2 + targetImgY * mainM.scale);
+    drawCanvas();
+  });
 
   const canvas = el("photo-canvas");
   canvas.addEventListener("mousedown", (e) => {
@@ -1360,7 +1522,12 @@ function bindEvents() {
     }
   });
 
-  window.addEventListener("resize", drawCanvas);
+  window.addEventListener("resize", () => {
+    if (window.innerWidth <= 960 && state.coverageMapOpen) {
+      state.coverageMapOpen = false;
+    }
+    drawCanvas();
+  });
 }
 
 bindEvents();

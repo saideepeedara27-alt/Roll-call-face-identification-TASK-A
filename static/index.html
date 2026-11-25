@@ -86,6 +86,7 @@
           <span id="zoom-level" class="zoom-label">100%</span>
           <button type="button" id="btn-zoom-in" class="btn btn-sm btn-ghost" aria-label="Zoom in" disabled>+</button>
           <button type="button" id="btn-zoom-reset" class="btn btn-sm btn-ghost" disabled>Fit</button>
+          <button type="button" id="btn-toggle-map" class="btn btn-sm btn-ghost" title="Toggle mini coverage map" disabled>Map</button>
           <span class="divider" aria-hidden="true"></span>
           <button type="button" id="btn-export-png" class="btn btn-sm btn-secondary" disabled>Export PNG</button>
           <button type="button" id="btn-export-csv" class="btn btn-sm btn-secondary" disabled>Export CSV</button>
@@ -111,6 +112,11 @@
         </div>
 
         <canvas id="photo-canvas" class="photo-canvas hidden"></canvas>
+
+        <div id="coverage-map-card" class="coverage-map-card hidden">
+          <canvas id="coverage-map-canvas" class="coverage-map-canvas" width="176" height="104" aria-label="Mini coverage map showing viewport and detected face markers"></canvas>
+          <div class="coverage-caption">Shows viewport and detected faces; does not prove every face was found</div>
+        </div>
 
         <div id="loading-overlay" class="loading-overlay hidden" aria-live="polite">
           <div class="spinner" aria-hidden="true"></div>
