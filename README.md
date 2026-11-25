@@ -20,7 +20,7 @@ RollCall is a local-only web application that matches faces in a group photograp
 Clone the repository, create a Python 3.11 virtual environment, and install the pinned runtime dependencies:
 
 ```bash
-git clone <your-repo-url> rollcall
+git clone https://github.com/saideepeedara27-alt/Roll-call-face-identification.git rollcall
 cd rollcall
 python3.11 -m venv .venv
 source .venv/bin/activate
