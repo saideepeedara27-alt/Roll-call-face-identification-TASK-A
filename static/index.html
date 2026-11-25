@@ -45,6 +45,10 @@
         Demo Mode
       </button>
 
+      <button type="button" id="btn-about-run" class="btn btn-ghost" title="Inspect folder-calibrated thresholds and limitations">
+        About this run
+      </button>
+
       <button type="button" id="btn-theme" class="btn btn-icon" aria-label="Toggle light or dark theme" title="Toggle theme">
         <span id="theme-icon" aria-hidden="true">&#9790;</span>
       </button>
@@ -264,6 +268,23 @@
           <h3>Enrolled Roster (<span id="roster-count">0</span>)</h3>
           <div id="roster-chips" class="roster-chips"></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- About This Run Drawer / Modal -->
+  <div id="about-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="about-modal-title">
+    <div class="modal-backdrop" data-close="about-modal"></div>
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="about-modal-title">About This Run — Calibration &amp; Limits</h2>
+          <p class="modal-subtitle">Folder-level different-person similarity calibration (floored at published SFace 0.363, capped at 0.50).</p>
+        </div>
+        <button type="button" class="btn btn-icon" data-close="about-modal" aria-label="Close calibration drawer">&times;</button>
+      </div>
+      <div class="modal-body" id="about-run-body">
+        <p class="photo-meta">Enroll a reference folder to view folder-calibrated thresholds.</p>
       </div>
     </div>
   </div>

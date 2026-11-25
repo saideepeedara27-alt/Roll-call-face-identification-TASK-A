@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psutil
 
+from rollcall.calibration import calibrate_from_exemplars
 from rollcall.config import (
     DEFAULT_THRESHOLDS,
     PRACTICE_DATA_DIR,
@@ -92,6 +93,7 @@ class AppState:
         self.jobs: dict[str, dict] = {}
         self.pending_multiface: dict[str, dict] = {}
         self.sessions: OrderedDict[str, dict] = OrderedDict()
+        self.last_calibration: dict | None = None
 
     def store_session(self, session_id: str, payload: dict) -> None:
         with self.lock:
@@ -300,6 +302,11 @@ def _enroll_file_list(
             )
 
     identities = state.db.list_identities()
+    exemplars = state.db.load_all_exemplars(engine.model_version)
+    calibration = calibrate_from_exemplars(exemplars).to_dict()
+    with state.lock:
+        state.last_calibration = calibration
+
     summary = {
         "total_files": total,
         "enrolled_photos": enrolled,
@@ -308,6 +315,7 @@ def _enroll_file_list(
         "warnings": warnings,
         "errors": errors,
         "multiface_pending": multiface_items,
+        "calibration": calibration,
         "memory_rss_mb": _memory_rss_mb(),
     }
 
@@ -334,6 +342,12 @@ def _identify_group_image(
     loaded = load_image_from_bytes(raw_bytes, filename=filename)
     exemplars = state.db.load_all_exemplars(engine.model_version)
     identities = state.db.list_identities()
+    calibration = calibrate_from_exemplars(exemplars, base=thresholds)
+    effective_thresholds = calibration.to_thresholds(
+        base=thresholds, enable_hungarian=thresholds.enable_hungarian
+    )
+    with state.lock:
+        state.last_calibration = calibration.to_dict()
 
     detected = engine.detect_faces(loaded.bgr)
     match_inputs: list[FaceMatchInput] = []
@@ -343,9 +357,9 @@ def _identify_group_image(
             loaded.bgr,
             face.bbox,
             face.score,
-            thresholds.min_face_size_px,
-            thresholds.min_blur_laplacian,
-            thresholds.min_detector_score,
+            effective_thresholds.min_face_size_px,
+            effective_thresholds.min_blur_laplacian,
+            effective_thresholds.min_detector_score,
         )
         crop = crop_face_with_margin(loaded.bgr, face.bbox)
         crop_b64 = _b64_jpeg(crop)
@@ -360,7 +374,7 @@ def _identify_group_image(
             )
         )
 
-    results = match_group_faces(match_inputs, exemplars, thresholds)
+    results = match_group_faces(match_inputs, exemplars, effective_thresholds)
     serialized_faces = [_serialize_face_result(r) for r in results]
     embeddings_by_face = {
         inp.face_index: inp.embedding for inp in match_inputs
@@ -384,6 +398,7 @@ def _identify_group_image(
         "embeddings": embeddings_by_face,
         "crop_bytes": crop_bytes_by_face,
         "model_version": engine.model_version,
+        "calibration": calibration.to_dict(),
     }
     state.store_session(session_id, session_obj)
 
@@ -448,6 +463,7 @@ def _build_session_response(
         "summary": summary,
         "absent_identities": absent_identities,
         "identities": identities,
+        "calibration": session_obj.get("calibration") or state.last_calibration,
         "memory_rss_mb": _memory_rss_mb(),
         "model_version": session_obj["model_version"],
     }
@@ -613,6 +629,16 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
     @app.get("/api/identities")
     def list_identities():
         return {"identities": state.db.list_identities()}
+
+    @app.get("/api/calibration")
+    def get_calibration():
+        if state.engine is None:
+            return {"calibration": None}
+        exemplars = state.db.load_all_exemplars(state.engine.model_version)
+        cal = calibrate_from_exemplars(exemplars).to_dict()
+        with state.lock:
+            state.last_calibration = cal
+        return {"calibration": cal}
 
     @app.get("/api/reference-crop/{photo_id}")
     def get_reference_crop(photo_id: int):
@@ -891,6 +917,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             state.sessions.clear()
             state.pending_multiface.clear()
             state.jobs.clear()
+            state.last_calibration = None
         return {"status": "wiped", "deleted": counts}
 
     if STATIC_DIR.is_dir():

@@ -591,6 +591,50 @@ function updateFilterChips() {
   });
 }
 
+async function openAboutRunDrawer() {
+  openModal("about-modal");
+  const body = el("about-run-body");
+  let cal = state.session?.calibration || null;
+  if (!cal) {
+    const res = await fetch("/api/calibration");
+    if (res.ok) {
+      const data = await res.json();
+      cal = data.calibration;
+    }
+  }
+  if (!cal) {
+    body.innerHTML = '<p class="photo-meta">No calibration data available yet. Enroll a folder first.</p>';
+    return;
+  }
+
+  const rawTxt = cal.raw_value !== null && cal.raw_value !== undefined ? cal.raw_value.toFixed(4) : "N/A";
+  const rawLabel = cal.fallback_used
+    ? "Raw 99.5th percentile (not applied)"
+    : "Raw 99.5th percentile";
+  let html = `
+    <div class="about-grid">
+      <div class="about-card"><span>Enrolled Identities (N)</span><strong>${cal.enrolled_identities}</strong></div>
+      <div class="about-card"><span>Different-Person Pairs</span><strong>${cal.pair_count}</strong></div>
+      <div class="about-card"><span>Percentile</span><strong>${escapeHtml(cal.percentile_used)}</strong></div>
+      <div class="about-card"><span>${rawLabel}</span><strong>${rawTxt}</strong></div>
+      <div class="about-card"><span>Final T_low (Floor ${cal.floor_value.toFixed(3)}, Cap ${cal.cap_value.toFixed(2)})</span><strong>${cal.final_t_low.toFixed(4)}</strong></div>
+      <div class="about-card"><span>Final T_high (Confirmed)</span><strong>${cal.final_t_high.toFixed(4)}</strong></div>
+    </div>
+    <p class="explain-detail">${escapeHtml(cal.method_summary)}</p>
+  `;
+
+  if (cal.warning) {
+    html += `<div class="about-warn">${escapeHtml(cal.warning)}</div>`;
+  }
+
+  html += `<div class="about-limits"><strong>Calibration Limits (Honest Disclosure):</strong><ul>`;
+  for (const lim of cal.limitations || []) {
+    html += `<li>${escapeHtml(lim)}</li>`;
+  }
+  html += `</ul></div>`;
+  body.innerHTML = html;
+}
+
 function escapeHtml(str) {
   return String(str)
     .replaceAll("&", "&amp;")
@@ -608,6 +652,7 @@ function bindEvents() {
 
   el("btn-open-enroll").addEventListener("click", () => openModal("enroll-modal"));
   el("btn-empty-enroll").addEventListener("click", () => openModal("enroll-modal"));
+  el("btn-about-run").addEventListener("click", openAboutRunDrawer);
   el("btn-wipe").addEventListener("click", () => openModal("wipe-modal"));
 
   document.querySelectorAll("[data-close]").forEach((node) => {
