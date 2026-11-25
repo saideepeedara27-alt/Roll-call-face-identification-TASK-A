@@ -29,6 +29,18 @@ This document records the genuine pair-programming decisions, trade-offs, and ev
 
 ---
 
+### Decision 3: Recognition, Quality Gating & Open-Set Matching Strategy (Checkpoint 3)
+- **AI Suggested:** All-exemplar max-match for multi-photo identities; quality gate before matching; 3-tier open-set (`Confirmed` / `Likely` / `unknown`) using similarity score + runner-up margin; optional threshold-gated Hungarian assignment with dummy `unknown` nodes.
+- **What I Decided:** Approved all four components with four strict safeguards:
+  1. Do not hardcode a 28–32 px minimum face-size cutoff—establish the usable quality floor empirically on validation data alongside blur and lighting.
+  2. Keep the three states strictly separated (`Confirmed`, `Likely`, `unknown`); `Likely` never silently upgrades to `Confirmed` and requires human review/confirmation.
+  3. Keep **independent per-face matching as the default**; enable Hungarian assignment only if validation proves measurable improvement, and never allow it to upgrade a weak or `Likely` match or bypass dummy `unknown` nodes.
+  4. Track detection failures (missed faces) separately from recognition failures (low-quality / `unknown` / misidentification).
+- **Why:** Prevents forced false positives, preserves multi-appearance variation (e.g., glasses), and ensures honest, explainable evaluation metrics.
+- **Evidence:** *Pending* (validation curves, FAR/FRR benchmarks, and ablation results in Checkpoint 5).
+
+---
+
 ## Pasted Chat Excerpts
 *(To be added from genuine session transcripts as development progresses.)*
 
