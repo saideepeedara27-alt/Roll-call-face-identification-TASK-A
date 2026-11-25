@@ -1,8 +1,8 @@
-# RollCall — Offline Face Identification & Attendance Intelligence
+# PhotoProof — Offline, Privacy-First Group Photo Face Identification
 
 **Take-Home Task A: Who Is in the Photo?**
 
-RollCall is a local-only web application that matches faces in a group photograph against a reference folder of named portraits (`Priya Sharma.jpg`, etc.). It detects faces with **OpenCV YuNet**, extracts 128-d face embeddings with **OpenCV SFace**, separates confident matches (**Confirmed**), borderline/ambiguous matches (**Likely**), and unrecognized faces (**unknown**), and tracks attendance with an explainable human-in-the-loop review workflow.
+PhotoProof is a local-only web application that helps office staff identify who is in a group photograph. It matches faces in the group photo against a reference folder of named portraits (`Priya Sharma.jpg`, etc.), detects faces with **OpenCV YuNet**, extracts 128-d face embeddings with **OpenCV SFace**, classifies each result as a **High-confidence match**, **Needs review**, or **Unknown**, and surfaces an Evidence Card for every face so a human reviewer can confirm, reassign, or override each suggestion before any result is treated as final.
 
 ---
 
@@ -11,7 +11,7 @@ RollCall is a local-only web application that matches faces in a group photograp
 - **OS:** macOS (tested on Apple Silicon, macOS `27.2.1`)
 - **Python:** **Python 3.11+** (tested on `Python 3.11.14`; if your default `python3` points to another version, invoke `python3.11` explicitly)
 - **Browser Tested:** End-to-end UI verification was run in the built-in Chromium webview browser. Other browsers (such as Safari or Firefox) have **not** been tested yet; if a browser environment cannot use the `webkitdirectory` folder picker, use the built-in **Paste Folder Path** fallback.
-- **One-time internet access:** Needed **only once before runtime** to install Python packages and download the two OpenCV Zoo ONNX model files via `scripts/setup_models.py`. After that, RollCall runs **100% offline** on `127.0.0.1`.
+- **One-time internet access:** Needed **only once before runtime** to install Python packages and download the two OpenCV Zoo ONNX model files via `scripts/setup_models.py`. After that, PhotoProof runs **100% offline** on `127.0.0.1`.
 
 ---
 
@@ -20,8 +20,8 @@ RollCall is a local-only web application that matches faces in a group photograp
 Clone the repository, create a Python 3.11 virtual environment, and install the pinned runtime dependencies:
 
 ```bash
-git clone https://github.com/saideepeedara27-alt/Roll-call-face-identification.git rollcall
-cd rollcall
+git clone https://github.com/saideepeedara27-alt/Roll-call-face-identification.git photoproof
+cd photoproof
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -33,11 +33,11 @@ To run the automated test suite as well, install the pinned development dependen
 pip install -r requirements-dev.txt
 ```
 
-> **Dependency note (`opentelemetry-api`):** Installing `fastapi==0.165.0` pulls in `opentelemetry-api` as a transitive dependency of FastAPI itself. RollCall never imports `opentelemetry` and sends no telemetry or network traffic.
+> **Dependency note (`opentelemetry-api`):** Installing `fastapi==0.165.0` pulls in `opentelemetry-api` as a transitive dependency of FastAPI itself. PhotoProof never imports `opentelemetry` and sends no telemetry or network traffic.
 
 ### Download & Verify Models (Run Once Online, Before Disconnecting)
 
-RollCall **never** downloads model weights at startup or runtime. Run `scripts/setup_models.py` once while online to download the OpenCV Zoo ONNX weights into `models/` and write `models/manifest.json`:
+PhotoProof **never** downloads model weights at startup or runtime. Run `scripts/setup_models.py` once while online to download the OpenCV Zoo ONNX weights into `models/` and write `models/manifest.json`:
 
 ```bash
 python scripts/setup_models.py
@@ -60,7 +60,7 @@ shasum -a 256 models/*.onnx
 
 ### What Happens If Models Are Missing?
 
-If `models/` is empty or missing when RollCall starts, it refuses to download anything and surfaces a `503` / degraded state (`ModelMissingError`):
+If `models/` is empty or missing when PhotoProof starts, it refuses to download anything and surfaces a `503` / degraded state (`ModelMissingError`):
 
 ```text
 Missing required offline model file(s): face_detection_yunet_2023mar.onnx, face_recognition_sface_2021dec.onnx in <repo>/models. Run `python scripts/setup_models.py` while connected to the internet first.
@@ -68,7 +68,7 @@ Missing required offline model file(s): face_detection_yunet_2023mar.onnx, face_
 
 ---
 
-## 3. Running RollCall (Offline)
+## 3. Running PhotoProof (Offline)
 
 With models prepared, you can turn Wi-Fi off and start the local server bound strictly to loopback (`127.0.0.1`):
 
@@ -94,8 +94,8 @@ Then open **`http://127.0.0.1:8000/`** in your browser.
 2. Choose one of two offline ways to load your reference folder of individual portraits (named `First Last.jpg`, e.g., `Priya Sharma.jpg`):
    - **Choose Reference Folder** (`webkitdirectory` folder picker), or
    - **Paste-Folder-Path Fallback:** paste an absolute local folder path (e.g., `/Users/you/Photos/office_roster`) and click **`Load Folder Path`** (`POST /api/enroll/from-path`). System roots (`/`, `/System`, `/etc`, etc.) are blocked, symlinks escaping the folder are skipped, and system junk (`.DS_Store`, `Thumbs.db`, `__MACOSX`, hidden dotfiles) is ignored cleanly.
-3. **Privacy default:** Embedding caching across runs is **ephemeral by default** (kept in memory for the active session). Leave **`Save embedding cache across runs (opt-in)`** unchecked unless you explicitly want SQLite caching (`runtime_data/rollcall.db`).
-4. **Multi-face reference photos:** If a reference image contains multiple faces, RollCall does not silently pick one. It keeps the photo in **`Needs attention`** with boxed candidates so you can click the intended person. Before group-photo upload, a non-blocking banner warns if any pending people are not enrolled yet (**`Continue without them`** lists them as `Not enrolled`).
+3. **Privacy default:** Embedding caching across runs is **ephemeral by default** (kept in memory for the active session). Leave **`Save embedding cache across runs (opt-in)`** unchecked unless you explicitly want SQLite caching (`runtime_data/photoproof.db`).
+4. **Multi-face reference photos:** If a reference image contains multiple faces, PhotoProof does not silently pick one. It keeps the photo in **`Needs attention`** with boxed candidates so you can click the intended person. Before group-photo upload, a non-blocking banner warns if any pending people are not enrolled yet (**`Continue without them`** lists them as `Not enrolled`).
 5. **Extra photos per person:** Additional photos sharing a parsed name (e.g., `Priya Sharma_2.jpg`) merge into that identity when cosine similarity passes `0.363`, or raise a warning (`May be a different person`) otherwise.
 
 ### Demo Mode (Bundled Practice Dataset)
@@ -103,43 +103,47 @@ Click **`Demo Mode`** in the top bar (or on the empty canvas) to run the real Yu
 
 > `Demo: dominant face auto-selected for 1 photo`
 
-### Group Photo Analysis & Second Look
-1. Click **`Upload Group Photo`** (or drag & drop a `.jpg`, `.jpeg`, `.png`, `.bmp`, or `.webp` image onto the canvas stage).
-2. Inspect each boxed face on the canvas or in the right-hand **Results & Explainability Inspector**:
-   - **Confirmed:** Meets calibrated low threshold `T_low` (floored at `0.363`, capped at `0.50` when calibrated across `>= 15` identities), adaptive high threshold **`T_high = max(T_low + 0.06, 0.44)`** (so when `T_low = 0.50`, `T_high = 0.56` and is never below `T_low`), and runner-up margin (`0.05` standard, or `0.10` lookalike margin for pairs `>= 0.42`).
-   - **Likely:** Borderline similarity (`T_low <= sim < T_high`), narrow margin, lookalike ambiguity, or low detector score. **Not counted as Present** until a human confirms.
-   - **unknown:** Below `T_low` or rejected by the quality gate (`< 28 px` face size or `< 35.0` Laplacian blur variance — **initial experimental values, not validated** on a real benchmark).
-3. Click **`About this run`** to inspect the `99.5th`-percentile folder calibration details, lookalike/possible-duplicate pairs (`>= 0.55`), and explicit limitations.
-4. Click **`Second Look`** to scan overlapping tiles (`2×2` or `3×2` with 20% overlap) for missed faces while keeping existing face indices stable, or click **`Draw Box`** to outline a missed face manually (requires detector score `>= 0.35`, capped at `Likely`).
-5. Use the **Mini Coverage Map** (`Map` button) to view your zoom/pan viewport and jump directly to detected face markers.
+### Group Photo Analysis & Evidence Cards
+1. Click **`Analyse group photo`** (or drag & drop a `.jpg`, `.jpeg`, `.png`, `.bmp`, or `.webp` image onto the canvas).
+2. PhotoProof detects every usable face and classifies each one:
+   - **High-confidence match:** Similarity meets calibrated threshold `T_low` (floored at `0.363`, capped at `0.50` when calibrated across `>= 15` identities), adaptive high threshold **`T_high = max(T_low + 0.06, 0.44)`**, and runner-up margin (`0.05` standard, or `0.10` lookalike margin for pairs `>= 0.42`).
+   - **Needs review:** Borderline similarity (`T_low <= sim < T_high`), narrow margin, lookalike ambiguity, or low detector score. **Not treated as a confirmed identification** until a human reviews.
+   - **Unknown:** Below `T_low` or rejected by the quality gate (`< 28 px` face size or `< 35.0` Laplacian blur variance — **initial experimental values, not validated** on a real benchmark).
+3. Click any face label or box to open its **Evidence Card**, which shows:
+   - Cropped group face and proposed reference portrait.
+   - Second-best candidate (when relevant) and runner-up margin.
+   - Quality warnings (blur, small face, profile angle, occlusion).
+   - A plain-English decision explanation.
+   - **Confirm**, **Choose another person**, and **Mark Unknown** actions.
+4. Click **`Second Look`** to scan overlapping tiles (`2×2` or `3×2` with 20% overlap) for missed faces while keeping existing face indices stable, or click **`Draw Box`** to outline a missed face manually (requires detector score `>= 0.35`, capped at `Needs review`).
 
-### Keyboard Review Queue & Shortcuts
-Click **`Review Queue`** (or press `R`) to step through uncertain/unresolved faces (`Likely` and `unknown`). Reviewer decisions update attendance live in session state, **never mutate reference embeddings**, and record rows in the **Append-Only Decision Trail**:
+### Keyboard Shortcuts & Review Queue
+Press `R` to toggle the Keyboard Review Queue and step through uncertain faces (`Needs review` and `Unknown`). Reviewer decisions update results live in session state, **never mutate reference embeddings**, and are recorded in the **Append-Only Decision Trail**:
 
 | Key | Action |
 | --- | --- |
 | `J` / `K` | Next / previous face |
 | `R` | Toggle Keyboard Review Queue |
 | `S` | Skip current face in Review Queue |
-| `C` | Confirm a `Likely` match -> `Confirmed by reviewer` (no-op on `unknown`) |
+| `C` | Confirm a `Needs review` match → `Confirmed by reviewer` |
 | `A` | Focus searchable **`Assign (A)`** name filter |
-| `U` | Mark selected face as `unknown` |
+| `U` | Mark selected face as `Unknown` |
 | `Z` | Undo last reviewer correction |
 | `Esc` | Close active modal / assign dropdown / exit Review Queue |
 
-### Exports & Print-Ready Attendance Sheet
-- **`Export PNG`** (`GET /api/sessions/{session_id}/export/png`): Annotated group photo with boxes and labels.
-- **`Export CSV`** (`GET /api/sessions/{session_id}/export/csv`): Full attendance + match table.
-- **`Print Sheet`** (`GET /api/sessions/{session_id}/export/print`): Opens an HTML print-ready report designed for browser **`Print / Save as PDF`** (no external dependencies, zero face thumbnails by default, HTML-escaped values, `DEMO DATA` banner in Demo Mode, Page 1 summary + absent list, Page 2+ append-only Decision Trail appendix).
+### Exports & Results
+- **`Export PNG`** (`GET /api/sessions/{session_id}/export/png`): Annotated group photo with readable, non-overlapping face labels.
+- **`Export CSV`** (`GET /api/sessions/{session_id}/export/csv`): Full identification results table with face number, final status, proposed/final name, similarity score, and decision source (model suggestion vs. manual decision).
+- **`Print Sheet`** (`GET /api/sessions/{session_id}/export/print`): Opens an HTML print-ready report designed for browser **`Print / Save as PDF`** (no external dependencies, zero face thumbnails by default, HTML-escaped values, `DEMO DATA` banner in Demo Mode, Page 1 summary, Page 2+ append-only Decision Trail appendix).
 
-### Wipe All Data
-Click **`Wipe All Data`** -> **`Permanently Wipe Data`** (`POST /api/wipe`) to delete all local identities, reference crops, opted-in SQLite cached embeddings, active session state, and the decision trail. Model files in `models/` and your original images on disk are never touched.
+### Clear Session
+Click **`Clear session`** → **`Clear`** (`POST /api/wipe`) to delete all local identities, reference crops, opted-in SQLite cached embeddings, active session state, and the decision trail. Model files in `models/` and your original images on disk are never touched.
 
 ---
 
 ## 5. Offline Verification
 
-You can verify RollCall's offline guarantees in three ways:
+You can verify PhotoProof's offline guarantees in three ways:
 
 1. **Automated test suite (requires `requirements-dev.txt`):**
    ```bash

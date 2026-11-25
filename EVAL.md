@@ -1,4 +1,4 @@
-# RollCall Evaluation Report (`EVAL.md`)
+# PhotoProof Evaluation Report (`EVAL.md`)
 
 > **Important Scope Statement:** Every measurement in this document was collected using **synthetic imagery only** (`data/practice/` or algorithmically generated test images) on **one machine** (Apple Silicon MacBook Air M2, 8 GB RAM). **No real-world recognition accuracy, precision, recall, or false-accept claims are made.** Quantitative validation on unseen real photographs happens at live demo time.
 

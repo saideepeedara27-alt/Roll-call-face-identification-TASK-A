@@ -1,6 +1,6 @@
-# RollCall Runtime Dependencies (pinned for Apple Silicon / Python 3.11)
+# PhotoProof Runtime Dependencies (pinned for Apple Silicon / Python 3.11)
 # Note: fastapi==0.165.0 pulls opentelemetry-api as a transitive dependency;
-# RollCall does not import or emit telemetry.
+# PhotoProof does not import or emit telemetry.
 fastapi==0.165.0
 uvicorn==0.54.0
 python-multipart==0.0.34

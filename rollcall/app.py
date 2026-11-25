@@ -1,4 +1,4 @@
-"""FastAPI local server for RollCall (strictly bound to 127.0.0.1, 100% offline)."""
+"""FastAPI local server for PhotoProof (strictly bound to 127.0.0.1, 100% offline)."""
 
 import asyncio
 import base64
@@ -114,7 +114,7 @@ class AppState:
             except ModelMissingError as exc:
                 self.model_error = str(exc)
 
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rollcall-cv")
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="photoproof-cv")
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self.pending_multiface: dict[str, dict] = {}

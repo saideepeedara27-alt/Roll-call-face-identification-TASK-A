@@ -1,7 +1,7 @@
 [project]
-name = "rollcall"
-version = "0.1.0"
-description = "Offline, privacy-first, explainable face identification and attendance intelligence"
+name = "photoproof"
+version = "1.0.0"
+description = "PhotoProof — offline, privacy-first, explainable face identification for group photos"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

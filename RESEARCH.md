@@ -2,7 +2,7 @@
 
 **Take-Home Task A: Who Is in the Photo?**
 
-This document summarizes the tools, libraries, papers, open-set recognition strategies, and datasets investigated before finalizing RollCall's implementation, including what was selected, what was rejected, and why.
+This document summarizes the tools, libraries, papers, open-set recognition strategies, and datasets investigated before finalizing PhotoProof's implementation, including what was selected, what was rejected, and why.
 
 ---
 
@@ -32,7 +32,7 @@ This document summarizes the tools, libraries, papers, open-set recognition stra
 
 ## 2. Open-Set Matching, Calibration & Assignment Research
 
-- **Published SFace LFW Baseline vs. Folder Calibration:** OpenCV documents cosine similarity `0.363` as a baseline SFace verification point on LFW (`tutorial_dnn_face.html`). Because verification benchmarks on centered celebrity portraits do not account for lookalikes inside a specific 50-person office folder, RollCall floors at `0.363` and computes the `99.5th` percentile across distinct identity pairs (when `N >= 15`, capped at `0.50`) — explicitly disclosing in UI that one-photo-per-person calibration estimates impostor-pair behavior only, not same-person variance.
+- **Published SFace LFW Baseline vs. Folder Calibration:** OpenCV documents cosine similarity `0.363` as a baseline SFace verification point on LFW (`tutorial_dnn_face.html`). Because verification benchmarks on centered celebrity portraits do not account for lookalikes inside a specific 50-person office folder, PhotoProof floors at `0.363` and computes the `99.5th` percentile across distinct identity pairs (when `N >= 15`, capped at `0.50`) — explicitly disclosing in UI that one-photo-per-person calibration estimates impostor-pair behavior only, not same-person variance.
 - **Runner-Up Margin & Lookalike Ambiguity Guard:** High cosine score alone can still fail when two enrolled people look similar. Requiring a margin (`0.05` baseline; `0.10` when enrolled pair similarity `>= 0.42`) prevents forced wrong identifications by sending narrow-margin cases to human review (`Likely`).
 - **Linear Sum Assignment (Hungarian Algorithm):** Reviewed global 1-to-1 matching (`scipy.optimize.linear_sum_assignment`: <https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html>). **Decision:** Keep independent per-face matching as default; make Hungarian **opt-in**, augmented with explicit dummy `"unknown"` nodes so duplicate assignments resolve conservatively (`Confirmed`/`Likely` never upgraded, weak faces never forced to an identity).
 

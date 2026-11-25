@@ -1,6 +1,6 @@
-# AI Collaboration Log — RollCall (Task A: Who Is in the Photo?)
+# AI Collaboration Log — PhotoProof (Task A: Who Is in the Photo?)
 
-This document records how the author (**Saideep**, final-year B.Tech CSE Data Science student) steered the AI coding assistant through architecture, matching logic, UX, testing, and evaluation for **RollCall**, with verbatim evidence and a complete chat-history export inventory.
+This document records how the author (**Saideep**, final-year B.Tech CSE Data Science student) steered the AI coding assistant through architecture, matching logic, UX, testing, and evaluation for **PhotoProof**, with verbatim evidence and a complete chat-history export inventory.
 
 > **Attribution Transparency Note:** Decisions **1–4** originated from structured Checkpoint 1–4 reviews pasted into session Turns 0–36 — those are explicitly flagged below so you can double-check any nuance against your earlier browser brainstorming chat before submission. Decisions **5–10** come 100% directly from your prompts and code reviews in this recorded Antigravity session.
 
@@ -26,7 +26,7 @@ This document records how the author (**Saideep**, final-year B.Tech CSE Data Sc
 > *[Verify origin: distilled from structured Checkpoint 3 review text pasted in Turn 29]*
 - **AI Suggested:** Multi-exemplar max-match, hardcoded 28–32 px quality cutoff, three-tier open-set (`Confirmed` / `Likely` / `unknown`), and Hungarian assignment.
 - **What I Decided:** Treat `28–32 px` strictly as unvalidated initial hypothesis; keep independent matching as default and **never** allow Hungarian assignment to upgrade weak or `Likely` matches or remove dummy `unknown` nodes; track detection misses separately from recognition failures.
-- **Why:** `"RollCall should prefer an honest unknown result over a confidently incorrect identity."` (Turn 2)
+- **Why:** `"PhotoProof should prefer an honest unknown result over a confidently incorrect identity."` (Turn 2)
 - **Evidence:** [`rollcall/matcher.py`](rollcall/matcher.py), [`tests/test_engine_and_matcher.py`](tests/test_engine_and_matcher.py).
 
 ### Decision 4: Concept B Studio Inspector UI & Non-Technical UX *(Checkpoint 4)*
