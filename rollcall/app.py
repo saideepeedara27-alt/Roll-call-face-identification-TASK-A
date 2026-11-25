@@ -462,11 +462,100 @@ class ResolveMultiFaceRequest(BaseModel):
     candidate_index: int | None = None  # None skips this image
 
 
+class EnrollPathRequest(BaseModel):
+    folder_path: str
+    clear_existing: bool = True
+    persist_cache: bool = False
+
+
 class CorrectionRequest(BaseModel):
     face_index: int
     action: str  # "confirm", "assign", "mark_unknown", "enroll_new"
     identity_id: str | None = None
     new_display_name: str | None = None
+
+
+_FORBIDDEN_ROOTS = (
+    Path("/System"),
+    Path("/Library"),
+    Path("/usr"),
+    Path("/bin"),
+    Path("/sbin"),
+    Path("/etc"),
+    Path("/private/etc"),
+    Path("/var/db"),
+    Path("/var/root"),
+    Path("/private/var/db"),
+    Path("/private/var/root"),
+)
+
+
+def _read_folder_images_safely(folder_path: str, max_files: int = 500) -> list[tuple[str, bytes]]:
+    raw = (folder_path or "").strip().strip('"').strip("'")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Folder path cannot be empty.")
+
+    target = Path(raw).expanduser().resolve(strict=False)
+    if str(target) in ("/", "/var", "/private", "/private/var") or any(
+        target == root or root in target.parents for root in _FORBIDDEN_ROOTS
+    ):
+        raise HTTPException(status_code=400, detail="Access to system directories is not allowed.")
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(status_code=400, detail=f"Folder not found: {target}")
+
+    entries = sorted(p for p in target.iterdir() if not p.name.startswith("."))
+    file_items: list[tuple[str, bytes]] = []
+    for entry in entries:
+        if len(file_items) >= max_files:
+            break
+        try:
+            resolved_entry = entry.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved_entry.is_relative_to(target) or not resolved_entry.is_file():
+            continue
+        file_items.append((entry.name, resolved_entry.read_bytes()))
+
+    if not file_items:
+        raise HTTPException(status_code=400, detail="No readable files found in that folder.")
+    return file_items
+
+
+def _start_enroll_job(
+    state: AppState,
+    loop: asyncio.AbstractEventLoop,
+    file_items: list[tuple[str, bytes]],
+    clear_existing: bool,
+    persist_cache: bool,
+) -> dict:
+    job_id = uuid.uuid4().hex
+    with state.lock:
+        state.jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "processed": 0,
+            "total": len(file_items),
+            "current_file": "",
+            "summary": None,
+            "error": None,
+        }
+
+    def _run():
+        try:
+            _enroll_file_list(
+                state,
+                file_items,
+                clear_existing=clear_existing,
+                persist_cache=persist_cache,
+                job_id=job_id,
+            )
+        except Exception as exc:
+            with state.lock:
+                state.jobs[job_id]["status"] = "failed"
+                state.jobs[job_id]["error"] = str(exc)
+
+    loop.run_in_executor(state.executor, _run)
+    return {"job_id": job_id, "total": len(file_items)}
 
 
 def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
@@ -510,7 +599,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
     async def enroll_folder(
         files: list[UploadFile] = File(...),
         clear_existing: bool = Form(True),
-        persist_cache: bool = Form(True),
+        persist_cache: bool = Form(False),
     ):
         _require_engine(state)
         if not files:
@@ -521,36 +610,25 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             data = await f.read()
             file_items.append((f.filename or "unnamed.jpg", data))
 
-        job_id = uuid.uuid4().hex
-        with state.lock:
-            state.jobs[job_id] = {
-                "job_id": job_id,
-                "status": "running",
-                "processed": 0,
-                "total": len(file_items),
-                "current_file": "",
-                "summary": None,
-                "error": None,
-            }
+        return _start_enroll_job(
+            state,
+            asyncio.get_running_loop(),
+            file_items,
+            clear_existing=clear_existing,
+            persist_cache=persist_cache,
+        )
 
-        loop = asyncio.get_running_loop()
-
-        def _run():
-            try:
-                _enroll_file_list(
-                    state,
-                    file_items,
-                    clear_existing=clear_existing,
-                    persist_cache=persist_cache,
-                    job_id=job_id,
-                )
-            except Exception as exc:
-                with state.lock:
-                    state.jobs[job_id]["status"] = "failed"
-                    state.jobs[job_id]["error"] = str(exc)
-
-        loop.run_in_executor(state.executor, _run)
-        return {"job_id": job_id, "total": len(file_items)}
+    @app.post("/api/enroll/from-path")
+    async def enroll_from_path(req: EnrollPathRequest):
+        _require_engine(state)
+        file_items = _read_folder_images_safely(req.folder_path)
+        return _start_enroll_job(
+            state,
+            asyncio.get_running_loop(),
+            file_items,
+            clear_existing=req.clear_existing,
+            persist_cache=req.persist_cache,
+        )
 
     @app.get("/api/enroll/{job_id}")
     def enroll_status(job_id: str):
@@ -767,7 +845,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
 
         loop = asyncio.get_running_loop()
         enroll_summary = await loop.run_in_executor(
-            state.executor, _enroll_file_list, state, file_items, True, True, None
+            state.executor, _enroll_file_list, state, file_items, True, False, None
         )
         identify_result = await loop.run_in_executor(
             state.executor,

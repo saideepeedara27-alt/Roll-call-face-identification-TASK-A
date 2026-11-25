@@ -238,10 +238,15 @@
             <input type="checkbox" id="chk-clear-existing" checked />
             Replace existing roster
           </label>
-          <label class="checkbox-label">
-            <input type="checkbox" id="chk-persist-cache" checked />
-            Cache embeddings locally (SQLite)
+          <label class="checkbox-label" title="Ephemeral by default: embeddings stay in memory/session only unless you opt in to SQLite hash caching across runs.">
+            <input type="checkbox" id="chk-persist-cache" />
+            Save embedding cache across runs (opt-in)
           </label>
+        </div>
+
+        <div class="enroll-path-fallback">
+          <input id="folder-path-input" type="text" placeholder="Fallback: paste local folder path (e.g. /Users/.../team_photos)" aria-label="Paste local reference folder path" />
+          <button type="button" id="btn-enroll-path" class="btn btn-secondary">Load Folder Path</button>
         </div>
 
         <div id="enroll-progress-wrap" class="progress-wrap hidden">

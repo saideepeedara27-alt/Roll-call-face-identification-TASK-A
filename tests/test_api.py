@@ -156,3 +156,40 @@ def test_frontend_serves_locally_with_zero_external_urls(tmp_path):
     assert js_resp.status_code == 200
     assert "http://" not in js_resp.text
     assert "https://" not in js_resp.text
+
+
+def test_ephemeral_cache_default_and_enroll_from_path_safety(tmp_path):
+    db = RollCallDB(db_path=tmp_path / "test_ephemeral.db")
+    app = create_app(db=db, engine=MockFaceEngine())
+    client = TestClient(app)
+
+    folder = tmp_path / "team_photos"
+    folder.mkdir()
+    (folder / "Kavya_Nair.jpg").write_bytes(_make_textured_jpeg(300, 300))
+
+    # 1. Path fallback enrolls cleanly with ephemeral default (no cache rows written)
+    resp = client.post("/api/enroll/from-path", json={"folder_path": str(folder)})
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+
+    summary = None
+    for _ in range(30):
+        st = client.get(f"/api/enroll/{job_id}").json()
+        if st["status"] == "completed":
+            summary = st["summary"]
+            break
+        time.sleep(0.05)
+
+    assert summary is not None
+    assert summary["enrolled_photos"] == 1
+    assert summary["unique_identities"] == 1
+
+    # Verify embedding_cache stayed empty under ephemeral default
+    with db._connect() as conn:
+        cache_rows = conn.execute("SELECT COUNT(*) FROM embedding_cache;").fetchone()[0]
+    assert cache_rows == 0
+
+    # 2. Rejects missing directory and forbidden system paths
+    assert client.post("/api/enroll/from-path", json={"folder_path": str(tmp_path / "nope")}).status_code == 400
+    assert client.post("/api/enroll/from-path", json={"folder_path": "/etc"}).status_code == 400
+    assert client.post("/api/enroll/from-path", json={"folder_path": "/"}).status_code == 400

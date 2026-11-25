@@ -189,6 +189,30 @@ async function resolveMultiFace(token, candidateIndex, cardElement) {
   }
 }
 
+function pollEnrollJob(jobId) {
+  const progWrap = el("enroll-progress-wrap");
+  const poll = setInterval(async () => {
+    const stRes = await fetch(`/api/enroll/${jobId}`);
+    const st = await stRes.json();
+    const pct = st.total > 0 ? Math.round((st.processed / st.total) * 100) : 100;
+    el("enroll-progress-fill").style.width = `${pct}%`;
+    el("enroll-progress-pct").textContent = `${pct}%`;
+    el("enroll-progress-label").textContent =
+      st.status === "completed" ? "Enrollment complete" : `Processing ${st.current_file || "..."}`;
+
+    if (st.status === "completed") {
+      clearInterval(poll);
+      renderEnrollmentSummary(st.summary);
+      await refreshIdentities();
+      showToast(`Enrolled ${st.summary.unique_identities} identities.`);
+    } else if (st.status === "failed") {
+      clearInterval(poll);
+      progWrap.classList.add("hidden");
+      showToast(st.error || "Enrollment failed.");
+    }
+  }, 200);
+}
+
 async function handleFolderSelect(fileList) {
   const validFiles = Array.from(fileList).filter((f) => !f.name.startsWith("."));
   if (!validFiles.length) return;
@@ -215,25 +239,40 @@ async function handleFolderSelect(fileList) {
   }
 
   const { job_id } = await res.json();
-  const poll = setInterval(async () => {
-    const stRes = await fetch(`/api/enroll/${job_id}`);
-    const st = await stRes.json();
-    const pct = st.total > 0 ? Math.round((st.processed / st.total) * 100) : 100;
-    el("enroll-progress-fill").style.width = `${pct}%`;
-    el("enroll-progress-pct").textContent = `${pct}%`;
-    el("enroll-progress-label").textContent =
-      st.status === "completed" ? "Enrollment complete" : `Processing ${st.current_file || "..."}`;
+  pollEnrollJob(job_id);
+}
 
-    if (st.status === "completed") {
-      clearInterval(poll);
-      renderEnrollmentSummary(st.summary);
-      await refreshIdentities();
-      showToast(`Enrolled ${st.summary.unique_identities} identities.`);
-    } else if (st.status === "failed") {
-      clearInterval(poll);
-      showToast(st.error || "Enrollment failed.");
-    }
-  }, 200);
+async function handleFolderPathEnroll() {
+  const folderPath = el("folder-path-input").value.trim();
+  if (!folderPath) {
+    showToast("Paste a local folder path first.");
+    return;
+  }
+
+  const progWrap = el("enroll-progress-wrap");
+  progWrap.classList.remove("hidden");
+  el("enroll-progress-fill").style.width = "5%";
+  el("enroll-progress-label").textContent = "Reading local folder...";
+  el("enroll-progress-pct").textContent = "5%";
+
+  const res = await fetch("/api/enroll/from-path", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      folder_path: folderPath,
+      clear_existing: el("chk-clear-existing").checked,
+      persist_cache: el("chk-persist-cache").checked,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    showToast(err.detail || "Could not load folder path.");
+    progWrap.classList.add("hidden");
+    return;
+  }
+
+  const { job_id } = await res.json();
+  pollEnrollJob(job_id);
 }
 
 async function handleGroupUpload(file) {
@@ -572,6 +611,8 @@ function bindEvents() {
     handleFolderSelect(e.target.files);
     e.target.value = "";
   });
+
+  el("btn-enroll-path").addEventListener("click", handleFolderPathEnroll);
 
   el("group-file-input").addEventListener("change", (e) => {
     handleGroupUpload(e.target.files[0]);
