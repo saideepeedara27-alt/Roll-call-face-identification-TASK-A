@@ -188,21 +188,47 @@ def _enroll_file_list(
             )
             continue
 
-        if len(faces) > 1:
-            token = uuid.uuid4().hex
-            candidates_ui = []
-            candidates_internal = []
-            for f_idx, face in enumerate(faces):
-                crop = crop_face_with_margin(loaded.bgr, face.bbox)
-                crop_jpg = encode_jpeg_bytes(crop, quality=88)
-                q = assess_face_quality(
+        # Assess quality for all detected faces so tiny/blurry bokeh bystanders don't block clear portraits
+        assessed = [
+            (
+                face,
+                assess_face_quality(
                     loaded.bgr,
                     face.bbox,
                     face.score,
                     thresholds.min_face_size_px,
                     thresholds.min_blur_laplacian,
                     thresholds.min_detector_score,
-                )
+                ),
+            )
+            for face in faces
+        ]
+        max_area = max(f.bbox[2] * f.bbox[3] for f, _ in assessed)
+        dominant_foreground = [
+            (f, q)
+            for f, q in assessed
+            if q.passed and (f.bbox[2] * f.bbox[3]) >= 0.16 * max_area
+        ]
+
+        if len(faces) > 1 and len(dominant_foreground) == 1:
+            face, quality = dominant_foreground[0]
+            warnings.append(
+                {
+                    "filename": parsed.original_filename,
+                    "display_name": parsed.display_name,
+                    "reason": (
+                        f"Auto-selected dominant portrait ({quality.width_px}x{quality.height_px} px); "
+                        f"ignored {len(faces) - 1} small/blurred background face(s)."
+                    ),
+                }
+            )
+        elif len(faces) > 1:
+            token = uuid.uuid4().hex
+            candidates_ui = []
+            candidates_internal = []
+            for f_idx, (face, q) in enumerate(assessed):
+                crop = crop_face_with_margin(loaded.bgr, face.bbox)
+                crop_jpg = encode_jpeg_bytes(crop, quality=88)
                 emb = engine.extract_embedding(loaded.bgr, face)
                 candidates_ui.append(
                     {
@@ -242,17 +268,9 @@ def _enroll_file_list(
                 }
             )
             continue
+        else:
+            face, quality = assessed[0]
 
-        # Exactly 1 face detected
-        face = faces[0]
-        quality = assess_face_quality(
-            loaded.bgr,
-            face.bbox,
-            face.score,
-            thresholds.min_face_size_px,
-            thresholds.min_blur_laplacian,
-            thresholds.min_detector_score,
-        )
         emb = engine.extract_embedding(loaded.bgr, face)
         crop = crop_face_with_margin(loaded.bgr, face.bbox)
         crop_jpg = encode_jpeg_bytes(crop, quality=88)
