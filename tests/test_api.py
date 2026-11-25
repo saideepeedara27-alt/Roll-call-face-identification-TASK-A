@@ -134,3 +134,25 @@ def test_health_enroll_identify_correct_export_and_wipe(tmp_path):
     assert wipe.status_code == 200
     assert wipe.json()["deleted"]["identities"] == 2
     assert client.get("/api/identities").json()["identities"] == []
+
+
+def test_frontend_serves_locally_with_zero_external_urls(tmp_path):
+    db = RollCallDB(db_path=tmp_path / "test_ui.db")
+    app = create_app(db=db, engine=MockFaceEngine())
+    client = TestClient(app)
+
+    index_resp = client.get("/")
+    assert index_resp.status_code == 200
+    assert "RollCall" in index_resp.text
+    assert "http://" not in index_resp.text
+    assert "https://" not in index_resp.text
+
+    css_resp = client.get("/static/styles.css")
+    assert css_resp.status_code == 200
+    assert "http://" not in css_resp.text
+    assert "https://" not in css_resp.text
+
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "http://" not in js_resp.text
+    assert "https://" not in js_resp.text

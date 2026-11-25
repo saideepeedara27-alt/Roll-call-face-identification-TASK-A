@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RollCall — Offline Face Identification &amp; Attendance</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <div class="topbar-left">
+      <div class="brand" aria-label="RollCall Home">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M4 8V6a2 2 0 0 1 2-2h2" />
+          <path d="M16 4h2a2 2 0 0 1 2 2v2" />
+          <path d="M4 16v2a2 2 0 0 0 2 2h2" />
+          <path d="M16 20h2a2 2 0 0 0 2-2v-2" />
+          <circle cx="12" cy="10" r="3" />
+          <path d="M7.5 17.5c1-2.2 2.7-3.2 4.5-3.2s3.5 1 4.5 3.2" />
+        </svg>
+        <div>
+          <span class="brand-name">RollCall</span>
+          <span class="brand-sub">Attendance Intelligence</span>
+        </div>
+      </div>
+
+      <span class="offline-pill" title="Runs locally on 127.0.0.1 with zero external APIs, cloud calls, or CDNs.">
+        <span class="offline-dot" aria-hidden="true"></span>
+        Offline &bull; Local 127.0.0.1
+      </span>
+    </div>
+
+    <div class="topbar-actions">
+      <button type="button" id="btn-open-enroll" class="btn btn-secondary">
+        <span id="enrolled-pill-text">0 Enrolled</span>
+        <span id="warning-dot" class="warn-badge hidden" title="Enrollment warnings">!</span>
+      </button>
+
+      <label class="btn btn-primary file-trigger" tabindex="0" role="button" for="group-file-input">
+        Upload Group Photo
+      </label>
+      <input id="group-file-input" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp" class="sr-only" />
+
+      <button type="button" id="btn-demo" class="btn btn-ghost" title="Run the real pipeline on bundled practice data">
+        Demo Mode
+      </button>
+
+      <button type="button" id="btn-theme" class="btn btn-icon" aria-label="Toggle light or dark theme" title="Toggle theme">
+        <span id="theme-icon" aria-hidden="true">&#9790;</span>
+      </button>
+
+      <button type="button" id="btn-wipe" class="btn btn-danger-outline" title="Permanently delete all local identities, embeddings, and session data">
+        Wipe All Data
+      </button>
+    </div>
+  </header>
+
+  <div id="model-alert" class="alert-banner hidden" role="alert"></div>
+  <div id="toast-area" class="toast-area" aria-live="polite"></div>
+
+  <main class="workbench" role="main">
+    <!-- Left / Center Stage: Interactive Annotated Group Photo Canvas -->
+    <section class="canvas-pane" aria-label="Group photograph viewer">
+      <div class="canvas-toolbar">
+        <div class="toolbar-info">
+          <span id="photo-title" class="photo-title">No group photo loaded</span>
+          <span id="photo-meta" class="photo-meta"></span>
+        </div>
+        <div class="toolbar-controls">
+          <button type="button" id="btn-zoom-out" class="btn btn-sm btn-ghost" aria-label="Zoom out" disabled>&minus;</button>
+          <span id="zoom-level" class="zoom-label">100%</span>
+          <button type="button" id="btn-zoom-in" class="btn btn-sm btn-ghost" aria-label="Zoom in" disabled>+</button>
+          <button type="button" id="btn-zoom-reset" class="btn btn-sm btn-ghost" disabled>Fit</button>
+          <span class="divider" aria-hidden="true"></span>
+          <button type="button" id="btn-export-png" class="btn btn-sm btn-secondary" disabled>Export PNG</button>
+          <button type="button" id="btn-export-csv" class="btn btn-sm btn-secondary" disabled>Export CSV</button>
+        </div>
+      </div>
+
+      <div id="canvas-stage" class="canvas-stage" tabindex="0" aria-label="Interactive group photo canvas. Use arrow keys to cycle detected faces.">
+        <div id="empty-dropzone" class="empty-dropzone">
+          <div class="empty-card">
+            <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <rect x="6" y="10" width="36" height="28" rx="4" />
+              <circle cx="17" cy="20" r="3" />
+              <path d="M8 34l9-8 7 6 6-5 10 7" />
+            </svg>
+            <h2>Identify Everyone in Your Group Photo</h2>
+            <p>100% local on your Mac. Select an enrolled folder (~50 people), then drop or upload a group photograph.</p>
+            <div class="empty-cta-row">
+              <button type="button" id="btn-empty-enroll" class="btn btn-secondary">1. Select Reference Folder</button>
+              <label for="group-file-input" class="btn btn-primary file-trigger" tabindex="0">2. Upload Group Photo</label>
+              <button type="button" id="btn-empty-demo" class="btn btn-ghost">Try Demo Mode</button>
+            </div>
+          </div>
+        </div>
+
+        <canvas id="photo-canvas" class="photo-canvas hidden"></canvas>
+
+        <div id="loading-overlay" class="loading-overlay hidden" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <p id="loading-text">Running local YuNet + SFace analysis...</p>
+        </div>
+      </div>
+
+      <div class="legend-bar" aria-label="Face status legend">
+        <span class="legend-item"><span class="legend-swatch swatch-confirmed"></span>&#10003; Confirmed</span>
+        <span class="legend-item"><span class="legend-swatch swatch-likely"></span>? Likely (Needs Review)</span>
+        <span class="legend-item"><span class="legend-swatch swatch-unknown"></span>! unknown</span>
+        <span class="legend-hint">Tip: Click a box or use &uarr;/&darr; keys to inspect</span>
+      </div>
+    </section>
+
+    <!-- Right Panel: Synchronized Face Results, Attendance & Explainability Inspector -->
+    <aside class="inspector-pane" aria-label="Results and explainability inspector">
+      <div class="summary-grid" id="summary-grid">
+        <div class="stat-card">
+          <span class="stat-label">Detected</span>
+          <strong class="stat-value" id="stat-detected">0</strong>
+        </div>
+        <div class="stat-card stat-confirmed">
+          <span class="stat-label">Confirmed</span>
+          <strong class="stat-value" id="stat-confirmed">0</strong>
+        </div>
+        <div class="stat-card stat-likely">
+          <span class="stat-label">Needs Review</span>
+          <strong class="stat-value" id="stat-likely">0</strong>
+        </div>
+        <div class="stat-card stat-unknown">
+          <span class="stat-label">unknown</span>
+          <strong class="stat-value" id="stat-unknown">0</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Absent</span>
+          <strong class="stat-value" id="stat-absent">0</strong>
+        </div>
+      </div>
+
+      <div class="filter-bar" role="tablist" aria-label="Filter face results">
+        <button type="button" class="filter-chip active" data-filter="all" role="tab" aria-selected="true">All</button>
+        <button type="button" class="filter-chip" data-filter="Confirmed" role="tab" aria-selected="false">Confirmed</button>
+        <button type="button" class="filter-chip" data-filter="Likely" role="tab" aria-selected="false">Likely</button>
+        <button type="button" class="filter-chip" data-filter="unknown" role="tab" aria-selected="false">unknown</button>
+        <button type="button" class="filter-chip" data-filter="absent" role="tab" aria-selected="false">Absent Enrolled</button>
+      </div>
+
+      <div id="results-list" class="results-list" role="list">
+        <div class="empty-list-msg">Upload a group photo to see detected faces and attendance status.</div>
+      </div>
+
+      <section id="explain-panel" class="explain-panel hidden" aria-label="Selected face explainability inspector">
+        <div class="explain-header">
+          <div>
+            <span id="explain-face-num" class="explain-kicker">Face #1</span>
+            <h3 id="explain-title">Priya Sharma</h3>
+          </div>
+          <span id="explain-badge" class="status-badge">Confirmed</span>
+        </div>
+
+        <div class="comparison-row">
+          <div class="crop-box">
+            <img id="explain-group-crop" alt="Detected face from group photo" />
+            <span>Detected Face</span>
+          </div>
+          <div class="crop-vs" aria-hidden="true">vs</div>
+          <div class="crop-box">
+            <img id="explain-ref-crop" alt="Matched reference portrait" />
+            <div id="explain-ref-placeholder" class="ref-placeholder hidden">No Match</div>
+            <span id="explain-ref-label">Reference Photo</span>
+          </div>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-item">
+            <span class="metric-label">Cosine Similarity</span>
+            <strong id="explain-sim">&mdash;</strong>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Runner-Up Margin (&Delta;)</span>
+            <strong id="explain-margin">&mdash;</strong>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Face Resolution</span>
+            <strong id="explain-size">&mdash;</strong>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Sharpness / Score</span>
+            <strong id="explain-quality">&mdash;</strong>
+          </div>
+        </div>
+
+        <p id="explain-runnerup" class="explain-detail"></p>
+        <p id="explain-reason" class="explain-reason"></p>
+
+        <div class="correction-box">
+          <div class="correction-title">Human-in-the-Loop Review (Session Only)</div>
+          <div class="correction-actions">
+            <button type="button" id="btn-confirm-match" class="btn btn-sm btn-confirmed hidden">Confirm Match</button>
+            <button type="button" id="btn-mark-unknown" class="btn btn-sm btn-ghost">Mark unknown</button>
+          </div>
+
+          <div class="correction-row">
+            <select id="assign-select" aria-label="Assign face to enrolled person">
+              <option value="">Assign to enrolled person...</option>
+            </select>
+            <button type="button" id="btn-assign-person" class="btn btn-sm btn-secondary">Assign</button>
+          </div>
+
+          <div class="correction-row">
+            <input id="enroll-new-name" type="text" placeholder="Or enroll as new person..." aria-label="New person name" />
+            <button type="button" id="btn-enroll-new" class="btn btn-sm btn-primary">Enroll</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <!-- Enrollment Drawer / Modal -->
+  <div id="enroll-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="enroll-modal-title">
+    <div class="modal-backdrop" data-close="enroll-modal"></div>
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="enroll-modal-title">Reference Folder Enrollment</h2>
+          <p class="modal-subtitle">Select a folder containing individual photos named by person (e.g. <code>Priya Sharma.jpg</code>). Multiple photos per person are grouped automatically.</p>
+        </div>
+        <button type="button" class="btn btn-icon" data-close="enroll-modal" aria-label="Close enrollment dialog">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="enroll-controls">
+          <label for="folder-input" class="btn btn-primary file-trigger" tabindex="0">
+            Choose Reference Folder
+          </label>
+          <input id="folder-input" type="file" webkitdirectory directory multiple accept=".jpg,.jpeg,.png,.bmp,.webp" class="sr-only" />
+
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-clear-existing" checked />
+            Replace existing roster
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-persist-cache" checked />
+            Cache embeddings locally (SQLite)
+          </label>
+        </div>
+
+        <div id="enroll-progress-wrap" class="progress-wrap hidden">
+          <div class="progress-top">
+            <span id="enroll-progress-label">Processing...</span>
+            <span id="enroll-progress-pct">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="enroll-progress-fill" class="progress-fill"></div>
+          </div>
+        </div>
+
+        <div id="enroll-summary" class="enroll-summary hidden"></div>
+        <div id="multiface-section" class="multiface-section hidden"></div>
+
+        <div class="roster-preview">
+          <h3>Enrolled Roster (<span id="roster-count">0</span>)</h3>
+          <div id="roster-chips" class="roster-chips"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wipe All Data Confirmation Modal -->
+  <div id="wipe-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wipe-modal-title">
+    <div class="modal-backdrop" data-close="wipe-modal"></div>
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h2 id="wipe-modal-title">Wipe All Local Data?</h2>
+        <button type="button" class="btn btn-icon" data-close="wipe-modal" aria-label="Close dialog">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="wipe-warning">This will permanently delete from local storage:</p>
+        <ul class="wipe-list">
+          <li>All enrolled identity records and reference face crops</li>
+          <li>All cached 128-d face embeddings in SQLite</li>
+          <li>All session corrections and active group-photo results</li>
+        </ul>
+        <p class="wipe-note">Bundled model weights and your original image files on disk are never deleted.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" data-close="wipe-modal">Cancel</button>
+        <button type="button" id="btn-confirm-wipe" class="btn btn-danger">Permanently Wipe Data</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
