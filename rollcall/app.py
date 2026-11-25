@@ -28,7 +28,7 @@ from rollcall.db import RollCallDB
 from rollcall.engine import ModelMissingError, OpenCVYuNetSFaceEngine
 from rollcall.enrollment import (
     build_health_counts,
-    check_extra_photo_consistency,
+    find_best_matching_entry,
     is_system_file,
     render_thumbnail_b64,
 )
@@ -115,6 +115,7 @@ class AppState:
         self.lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self.pending_multiface: dict[str, dict] = {}
+        self.pending_extra_photos: dict[str, dict] = {}
         self.sessions: OrderedDict[str, dict] = OrderedDict()
         self.last_calibration: dict | None = None
         self.last_enrollment_summary: dict | None = None
@@ -139,7 +140,7 @@ def _require_engine(state: AppState):
 
 def _enroll_single_candidate(
     state: AppState,
-    existing_embs_by_id: dict[str, list[np.ndarray]],
+    existing_entries_by_id: dict[str, list[dict]],
     identity_id: str,
     display_name: str,
     original_filename: str,
@@ -152,11 +153,74 @@ def _enroll_single_candidate(
     persist_cache: bool,
     warnings: list[dict],
     infos: list[dict],
+    merge_threshold: float = DEFAULT_THRESHOLDS.similarity_high,
+    extra_pending_items: list[dict] | None = None,
 ) -> dict:
-    """Persist one reference photo, check same-person consistency, and build its health record."""
-    prev_embs = existing_embs_by_id.get(identity_id, [])
-    is_extra = len(prev_embs) > 0
-    same_ok, same_sim = check_extra_photo_consistency(prev_embs, embedding)
+    """Persist one reference photo, enforce T_high extra-photo merge guard, and build health record."""
+    prev_entries = existing_entries_by_id.get(identity_id, [])
+    is_extra = len(prev_entries) > 0
+    best_existing, same_sim = find_best_matching_entry(prev_entries, embedding)
+
+    if is_extra and same_sim is not None and same_sim < merge_threshold:
+        # Hold suspicious extra photo OUT of DB & matching until reviewer keeps or rejects
+        token = uuid.uuid4().hex
+        existing_filename = (
+            best_existing.get("original_filename", display_name)
+            if best_existing is not None
+            else display_name
+        )
+        existing_thumb = (
+            best_existing.get("thumb_b64", "")
+            if best_existing is not None
+            else ""
+        )
+        reason_text = (
+            f"Flagged: may be a different person "
+            f"(similarity {same_sim:.4f} < T_high {merge_threshold:.4f}); "
+            f"held out of matching until kept or rejected."
+        )
+        with state.lock:
+            state.pending_extra_photos[token] = {
+                "token": token,
+                "identity_id": identity_id,
+                "display_name": display_name,
+                "original_filename": original_filename,
+                "image_sha256": image_sha256,
+                "model_version": model_version,
+                "embedding": embedding,
+                "crop_jpeg": crop_jpeg,
+                "quality": quality_dict,
+                "persist_cache": persist_cache,
+                "thumb_b64": thumb_b64,
+                "existing_filename": existing_filename,
+                "existing_thumb_b64": existing_thumb,
+                "similarity": same_sim,
+                "t_high": round(float(merge_threshold), 4),
+            }
+        if extra_pending_items is not None:
+            extra_pending_items.append(
+                {
+                    "token": token,
+                    "identity_id": identity_id,
+                    "display_name": display_name,
+                    "filename": original_filename,
+                    "existing_filename": existing_filename,
+                    "existing_thumb_b64": existing_thumb,
+                    "new_thumb_b64": thumb_b64,
+                    "similarity": same_sim,
+                    "t_high": round(float(merge_threshold), 4),
+                    "reason": reason_text,
+                }
+            )
+        return {
+            "filename": original_filename,
+            "display_name": display_name,
+            "identity_id": identity_id,
+            "status": "needs_attention",
+            "reason": reason_text,
+            "thumb_b64": thumb_b64,
+            "extra_token": token,
+        }
 
     state.db.add_reference_photo(
         identity_id=identity_id,
@@ -169,20 +233,16 @@ def _enroll_single_candidate(
         quality_dict=quality_dict,
         persist_cache=persist_cache,
     )
-    existing_embs_by_id.setdefault(identity_id, []).append(embedding)
+    existing_entries_by_id.setdefault(identity_id, []).append(
+        {
+            "embedding": embedding,
+            "original_filename": original_filename,
+            "thumb_b64": thumb_b64,
+        }
+    )
 
-    warning_reasons: list[str] = []
     if not quality_dict.get("passed", True):
-        warning_reasons.append(
-            "Quality warning: " + "; ".join(quality_dict.get("reasons", []))
-        )
-    if is_extra and not same_ok:
-        warning_reasons.append(
-            f"May be a different person (similarity {same_sim:.4f} < 0.363 against existing {display_name})"
-        )
-
-    if warning_reasons:
-        reason_text = "; ".join(warning_reasons)
+        reason_text = "Quality warning: " + "; ".join(quality_dict.get("reasons", []))
         warnings.append(
             {
                 "filename": original_filename,
@@ -223,6 +283,25 @@ def _enroll_single_candidate(
     }
 
 
+def _seed_existing_entries(state: AppState, model_version: str) -> dict[str, list[dict]]:
+    entries: dict[str, list[dict]] = {}
+    for ex in state.db.load_all_exemplars(model_version):
+        crop = state.db.get_reference_crop(ex["photo_id"])
+        thumb_b64 = (
+            "data:image/jpeg;base64," + base64.b64encode(crop).decode("ascii")
+            if crop
+            else ""
+        )
+        entries.setdefault(ex["identity_id"], []).append(
+            {
+                "embedding": ex["embedding"],
+                "original_filename": ex["original_filename"],
+                "thumb_b64": thumb_b64,
+            }
+        )
+    return entries
+
+
 def _enroll_file_list(
     state: AppState,
     file_items: list[tuple[str, bytes]],
@@ -230,7 +309,7 @@ def _enroll_file_list(
     persist_cache: bool,
     job_id: str | None = None,
 ) -> dict:
-    """Synchronous worker to enroll a folder of reference images."""
+    """Synchronous two-phase enrollment: enroll primaries, calibrate T_high, then check extra photos."""
     engine = _require_engine(state)
     thresholds = DEFAULT_THRESHOLDS
 
@@ -238,18 +317,19 @@ def _enroll_file_list(
         state.db.clear_enrolled_roster()
         with state.lock:
             state.pending_multiface.clear()
-        existing_embs_by_id: dict[str, list[np.ndarray]] = {}
+            state.pending_extra_photos.clear()
+        existing_entries_by_id: dict[str, list[dict]] = {}
     else:
-        existing_embs_by_id = {}
-        for ex in state.db.load_all_exemplars(engine.model_version):
-            existing_embs_by_id.setdefault(ex["identity_id"], []).append(ex["embedding"])
+        existing_entries_by_id = _seed_existing_entries(state, engine.model_version)
 
     cache_hits = 0
     warnings: list[dict] = []
     infos: list[dict] = []
     errors: list[dict] = []
     multiface_items: list[dict] = []
+    extra_pending_items: list[dict] = []
     file_records: list[dict] = []
+    deferred_extras: list[dict] = []
 
     total = len(file_items)
     for idx, (filename, raw_bytes) in enumerate(file_items, start=1):
@@ -298,23 +378,31 @@ def _enroll_file_list(
         if cached is not None:
             cache_hits += 1
             crop_b64 = "data:image/jpeg;base64," + base64.b64encode(cached["crop_jpeg"]).decode("ascii")
-            rec = _enroll_single_candidate(
-                state=state,
-                existing_embs_by_id=existing_embs_by_id,
-                identity_id=parsed.identity_key,
-                display_name=parsed.display_name,
-                original_filename=parsed.original_filename,
-                image_sha256=loaded.sha256,
-                model_version=engine.model_version,
-                embedding=cached["embedding"],
-                crop_jpeg=cached["crop_jpeg"],
-                quality_dict=cached["quality"],
-                thumb_b64=crop_b64,
-                persist_cache=persist_cache,
-                warnings=warnings,
-                infos=infos,
-            )
-            file_records.append(rec)
+            candidate_kwargs = {
+                "identity_id": parsed.identity_key,
+                "display_name": parsed.display_name,
+                "original_filename": parsed.original_filename,
+                "image_sha256": loaded.sha256,
+                "model_version": engine.model_version,
+                "embedding": cached["embedding"],
+                "crop_jpeg": cached["crop_jpeg"],
+                "quality_dict": cached["quality"],
+                "thumb_b64": crop_b64,
+                "persist_cache": persist_cache,
+            }
+            if parsed.identity_key in existing_entries_by_id:
+                slot = len(file_records)
+                file_records.append({})
+                deferred_extras.append((slot, candidate_kwargs))
+            else:
+                rec = _enroll_single_candidate(
+                    state=state,
+                    existing_entries_by_id=existing_entries_by_id,
+                    warnings=warnings,
+                    infos=infos,
+                    **candidate_kwargs,
+                )
+                file_records.append(rec)
             continue
 
         faces = engine.detect_faces(loaded.bgr)
@@ -422,23 +510,45 @@ def _enroll_file_list(
         crop = crop_face_with_margin(loaded.bgr, face.bbox)
         crop_jpg = encode_jpeg_bytes(crop, quality=88)
         thumb_b64 = render_thumbnail_b64(crop)
-        rec = _enroll_single_candidate(
+        candidate_kwargs = {
+            "identity_id": parsed.identity_key,
+            "display_name": parsed.display_name,
+            "original_filename": parsed.original_filename,
+            "image_sha256": loaded.sha256,
+            "model_version": engine.model_version,
+            "embedding": emb,
+            "crop_jpeg": crop_jpg,
+            "quality_dict": asdict(quality),
+            "thumb_b64": thumb_b64,
+            "persist_cache": persist_cache,
+        }
+        if parsed.identity_key in existing_entries_by_id:
+            slot = len(file_records)
+            file_records.append({})
+            deferred_extras.append((slot, candidate_kwargs))
+        else:
+            rec = _enroll_single_candidate(
+                state=state,
+                existing_entries_by_id=existing_entries_by_id,
+                warnings=warnings,
+                infos=infos,
+                **candidate_kwargs,
+            )
+            file_records.append(rec)
+
+    # Phase 2: calibrate T_high from primary exemplars first, then gate extra photos by sim >= T_high
+    prelim_exemplars = state.db.load_all_exemplars(engine.model_version)
+    prelim_cal = calibrate_from_exemplars(prelim_exemplars)
+    for slot, candidate_kwargs in deferred_extras:
+        file_records[slot] = _enroll_single_candidate(
             state=state,
-            existing_embs_by_id=existing_embs_by_id,
-            identity_id=parsed.identity_key,
-            display_name=parsed.display_name,
-            original_filename=parsed.original_filename,
-            image_sha256=loaded.sha256,
-            model_version=engine.model_version,
-            embedding=emb,
-            crop_jpeg=crop_jpg,
-            quality_dict=asdict(quality),
-            thumb_b64=thumb_b64,
-            persist_cache=persist_cache,
+            existing_entries_by_id=existing_entries_by_id,
             warnings=warnings,
             infos=infos,
+            merge_threshold=prelim_cal.final_t_high,
+            extra_pending_items=extra_pending_items,
+            **candidate_kwargs,
         )
-        file_records.append(rec)
 
     identities = state.db.list_identities()
     exemplars = state.db.load_all_exemplars(engine.model_version)
@@ -456,6 +566,7 @@ def _enroll_file_list(
         "warnings": warnings,
         "errors": errors,
         "multiface_pending": multiface_items,
+        "extra_photo_pending": extra_pending_items,
         "calibration": calibration,
         "memory_rss_mb": _memory_rss_mb(),
     }
@@ -680,6 +791,11 @@ class ResolveMultiFaceRequest(BaseModel):
     candidate_index: int | None = None  # None skips this image
 
 
+class ResolveExtraPhotoRequest(BaseModel):
+    token: str
+    decision: str  # "keep" or "reject"
+
+
 class EnrollPathRequest(BaseModel):
     folder_path: str
     clear_existing: bool = True
@@ -782,16 +898,16 @@ def _apply_multiface_resolution(
             raise HTTPException(status_code=400, detail="Invalid candidate face index.")
 
         chosen = candidates[candidate_index]
-        existing_embs_by_id: dict[str, list[np.ndarray]] = {}
-        for ex in state.db.load_all_exemplars(engine.model_version):
-            existing_embs_by_id.setdefault(ex["identity_id"], []).append(ex["embedding"])
+        existing_entries_by_id = _seed_existing_entries(state, engine.model_version)
+        current_cal = calibrate_from_exemplars(state.db.load_all_exemplars(engine.model_version))
 
         crop_b64 = "data:image/jpeg;base64," + base64.b64encode(chosen["crop_jpeg"]).decode("ascii")
         warnings_list: list[dict] = summary["warnings"] if summary else []
         infos_list: list[dict] = summary["infos"] if summary else []
+        extra_list: list[dict] = summary.setdefault("extra_photo_pending", []) if summary else []
         new_record = _enroll_single_candidate(
             state=state,
-            existing_embs_by_id=existing_embs_by_id,
+            existing_entries_by_id=existing_entries_by_id,
             identity_id=pending["identity_id"],
             display_name=pending["display_name"],
             original_filename=pending["original_filename"],
@@ -804,9 +920,35 @@ def _apply_multiface_resolution(
             persist_cache=pending["persist_cache"],
             warnings=warnings_list,
             infos=infos_list,
+            merge_threshold=current_cal.final_t_high,
+            extra_pending_items=extra_list,
         )
         outcome_status = new_record["status"]
 
+    return _refresh_summary_after_resolution(
+        state=state,
+        engine=engine,
+        summary=summary,
+        token=token,
+        token_key="token",
+        pending_list_key="multiface_pending",
+        new_record=new_record,
+        outcome_status=outcome_status,
+        display_name=pending["display_name"],
+    )
+
+
+def _refresh_summary_after_resolution(
+    state: AppState,
+    engine,
+    summary: dict | None,
+    token: str,
+    token_key: str,
+    pending_list_key: str,
+    new_record: dict,
+    outcome_status: str,
+    display_name: str,
+) -> dict:
     identities = state.db.list_identities()
     exemplars = state.db.load_all_exemplars(engine.model_version)
     calibration = calibrate_from_exemplars(exemplars).to_dict()
@@ -814,11 +956,11 @@ def _apply_multiface_resolution(
     if summary is not None:
         records = summary["file_records"]
         for i, rec in enumerate(records):
-            if rec.get("token") == token:
+            if rec.get(token_key) == token:
                 records[i] = new_record
                 break
-        summary["multiface_pending"] = [
-            m for m in summary["multiface_pending"] if m["token"] != token
+        summary[pending_list_key] = [
+            m for m in summary.get(pending_list_key, []) if m["token"] != token
         ]
         counts = build_health_counts(records)
         summary["counts"] = counts
@@ -833,10 +975,102 @@ def _apply_multiface_resolution(
 
     return {
         "status": outcome_status,
-        "display_name": pending["display_name"],
+        "display_name": display_name,
         "identities": identities,
         "summary": summary,
     }
+
+
+def _apply_extra_photo_resolution(
+    state: AppState,
+    token: str,
+    decision: str,
+) -> dict:
+    """Keep (enroll as exemplar) or reject (remove from review) a flagged extra photo."""
+    action = (decision or "").strip().lower()
+    if action not in ("keep", "reject"):
+        raise HTTPException(status_code=400, detail="Decision must be 'keep' or 'reject'.")
+
+    with state.lock:
+        pending = state.pending_extra_photos.pop(token, None)
+    if pending is None:
+        raise HTTPException(status_code=404, detail="Extra photo review token expired or invalid.")
+
+    engine = _require_engine(state)
+    summary = state.last_enrollment_summary
+
+    if action == "reject":
+        new_record = {
+            "filename": pending["original_filename"],
+            "display_name": pending["display_name"],
+            "identity_id": pending["identity_id"],
+            "status": "ignored",
+            "reason": "Rejected by reviewer (may be a different person; kept out of matching).",
+            "thumb_b64": None,
+        }
+        outcome_status = "rejected"
+    else:
+        state.db.add_reference_photo(
+            identity_id=pending["identity_id"],
+            display_name=pending["display_name"],
+            original_filename=pending["original_filename"],
+            image_sha256=pending["image_sha256"],
+            model_version=pending["model_version"],
+            embedding=pending["embedding"],
+            crop_jpeg=pending["crop_jpeg"],
+            quality_dict=pending["quality"],
+            persist_cache=pending["persist_cache"],
+        )
+        quality_passed = pending["quality"].get("passed", True)
+        if not quality_passed:
+            reason_text = (
+                f"Extra photo kept by reviewer (quality warning: "
+                + "; ".join(pending["quality"].get("reasons", []))
+                + f"; similarity {pending['similarity']:.4f})."
+            )
+            outcome_status = "enrolled_with_warnings"
+            if summary is not None:
+                summary["warnings"].append(
+                    {
+                        "filename": pending["original_filename"],
+                        "display_name": pending["display_name"],
+                        "reason": reason_text,
+                    }
+                )
+        else:
+            reason_text = (
+                f"Extra photo kept by reviewer and added to {pending['display_name']} "
+                f"(similarity {pending['similarity']:.4f})."
+            )
+            outcome_status = "enrolled"
+            if summary is not None:
+                summary["infos"].append(
+                    {
+                        "filename": pending["original_filename"],
+                        "display_name": pending["display_name"],
+                        "reason": reason_text,
+                    }
+                )
+        new_record = {
+            "filename": pending["original_filename"],
+            "display_name": pending["display_name"],
+            "identity_id": pending["identity_id"],
+            "status": outcome_status,
+            "reason": reason_text,
+            "thumb_b64": pending["thumb_b64"],
+        }
+
+    return _refresh_summary_after_resolution(
+        state=state,
+        engine=engine,
+        summary=summary,
+        token=token,
+        token_key="extra_token",
+        pending_list_key="extra_photo_pending",
+        new_record=new_record,
+        outcome_status=outcome_status,
+        display_name=pending["display_name"],
+    )
 
 
 def _start_enroll_job(
@@ -994,6 +1228,10 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
     @app.post("/api/enroll/resolve-multiface")
     def resolve_multiface(req: ResolveMultiFaceRequest):
         return _apply_multiface_resolution(state, req.token, req.candidate_index)
+
+    @app.post("/api/enroll/resolve-extra")
+    def resolve_extra(req: ResolveExtraPhotoRequest):
+        return _apply_extra_photo_resolution(state, req.token, req.decision)
 
     @app.post("/api/identify")
     async def identify_group_photo(
@@ -1502,6 +1740,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         with state.lock:
             state.sessions.clear()
             state.pending_multiface.clear()
+            state.pending_extra_photos.clear()
             state.jobs.clear()
             state.last_calibration = None
             state.last_enrollment_summary = None

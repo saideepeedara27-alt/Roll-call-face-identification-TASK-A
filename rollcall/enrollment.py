@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from rollcall.calibration import SFACE_FLOOR
+from rollcall.config import DEFAULT_THRESHOLDS
 from rollcall.image_utils import encode_jpeg_bytes
 
 _SYSTEM_FILENAMES = {".ds_store", "thumbs.db", "desktop.ini"}
@@ -62,7 +62,7 @@ def render_thumbnail_b64(
 def check_extra_photo_consistency(
     existing_embeddings: list[np.ndarray],
     new_embedding: np.ndarray,
-    threshold: float = SFACE_FLOOR,
+    threshold: float = DEFAULT_THRESHOLDS.similarity_high,
 ) -> tuple[bool, float | None]:
     """Compare a new reference photo against existing embeddings of the same identity_id."""
     if not existing_embeddings:
@@ -70,6 +70,23 @@ def check_extra_photo_consistency(
     sims = [float(np.dot(prev, new_embedding)) for prev in existing_embeddings]
     best = round(max(sims), 4)
     return best >= threshold, best
+
+
+def find_best_matching_entry(
+    existing_entries: list[dict],
+    new_embedding: np.ndarray,
+) -> tuple[dict | None, float | None]:
+    """Return the closest existing photo entry and similarity for side-by-side comparison."""
+    if not existing_entries:
+        return None, None
+    best_entry = None
+    best_sim = -2.0
+    for entry in existing_entries:
+        sim = float(np.dot(entry["embedding"], new_embedding))
+        if sim > best_sim:
+            best_sim = sim
+            best_entry = entry
+    return best_entry, round(best_sim, 4)
 
 
 def build_health_counts(file_records: list[dict]) -> dict:

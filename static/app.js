@@ -131,11 +131,22 @@ let pendingBannerDismissed = false;
 
 function updatePendingAttentionBanner(summary) {
   const banner = el("pending-attention-banner");
-  const pendingCount = summary?.counts?.needs_attention || 0;
+  const multifaceCount = (summary?.multiface_pending || []).length;
+  const extraCount = (summary?.extra_photo_pending || []).length;
+  const pendingCount = summary?.counts?.needs_attention ?? (multifaceCount + extraCount);
   if (pendingCount > 0 && !pendingBannerDismissed) {
-    const noun = pendingCount === 1 ? "person is" : "people are";
-    el("pending-attention-text").textContent =
-      `${pendingCount} ${noun} not enrolled until you pick their face.`;
+    const parts = [];
+    if (multifaceCount > 0) {
+      const noun = multifaceCount === 1 ? "person is" : "people are";
+      parts.push(`${multifaceCount} ${noun} not enrolled until you pick their face`);
+    }
+    if (extraCount > 0) {
+      const enoun = extraCount === 1 ? "extra photo is" : "extra photos are";
+      parts.push(`${extraCount} ${enoun} held out of matching ("may be a different person") until you keep or reject`);
+    }
+    el("pending-attention-text").textContent = parts.length
+      ? `${parts.join("; ")}.`
+      : `${pendingCount} item(s) need attention.`;
     banner.classList.remove("hidden");
   } else {
     banner.classList.add("hidden");
@@ -242,6 +253,79 @@ function renderEnrollmentSummary(summary, resetDismiss = true) {
   }
 
   renderMultiFaceChoices(summary.multiface_pending || []);
+  renderExtraPhotoChoices(summary.extra_photo_pending || []);
+}
+
+function renderExtraPhotoChoices(items) {
+  const wrap = el("extra-review-section");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!items.length) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  const heading = document.createElement("h3");
+  heading.className = "multiface-heading";
+  heading.textContent = `Needs Attention — Extra Photos (${items.length}) (may be a different person):`;
+  wrap.appendChild(heading);
+
+  for (const item of items) {
+    const card = document.createElement("div");
+    card.className = "multiface-card";
+    card.innerHTML = `<div><strong>${escapeHtml(item.display_name)}</strong> <span class="photo-meta">(${escapeHtml(item.filename)} — similarity ${item.similarity.toFixed(4)} &lt; T_high ${item.t_high.toFixed(4)} — may be a different person; held out of matching)</span></div>`;
+
+    const row = document.createElement("div");
+    row.className = "extra-compare-row";
+    row.innerHTML = `
+      <div class="extra-thumb-box">
+        <img src="${item.existing_thumb_b64 || ""}" alt="Existing enrolled portrait for ${escapeHtml(item.display_name)}" />
+        <span>Enrolled (${escapeHtml(item.existing_filename)})</span>
+      </div>
+      <div class="crop-vs" aria-hidden="true">vs</div>
+      <div class="extra-thumb-box">
+        <img src="${item.new_thumb_b64 || ""}" alt="Flagged extra photo ${escapeHtml(item.filename)}" />
+        <span>New Extra (${escapeHtml(item.filename)})</span>
+      </div>
+    `;
+
+    const actions = document.createElement("div");
+    actions.className = "multiface-actions";
+
+    const keepBtn = document.createElement("button");
+    keepBtn.type = "button";
+    keepBtn.className = "btn btn-sm btn-primary";
+    keepBtn.textContent = "Keep Photo (Add Exemplar)";
+    keepBtn.addEventListener("click", () => resolveExtraPhoto(item.token, "keep"));
+
+    const rejectBtn = document.createElement("button");
+    rejectBtn.type = "button";
+    rejectBtn.className = "btn btn-sm btn-danger-outline";
+    rejectBtn.textContent = "Reject Photo";
+    rejectBtn.addEventListener("click", () => resolveExtraPhoto(item.token, "reject"));
+
+    actions.appendChild(keepBtn);
+    actions.appendChild(rejectBtn);
+    card.appendChild(row);
+    card.appendChild(actions);
+    wrap.appendChild(card);
+  }
+}
+
+async function resolveExtraPhoto(token, decision) {
+  const res = await fetch("/api/enroll/resolve-extra", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, decision }),
+  });
+  if (res.ok) {
+    const data = await res.json();
+    if (data.summary) {
+      renderEnrollmentSummary(data.summary);
+    }
+    await refreshIdentities();
+    showToast(decision === "keep" ? "Extra photo kept and added as exemplar." : "Extra photo rejected and removed.");
+  }
 }
 
 function renderMultiFaceChoices(items) {
@@ -1231,6 +1315,7 @@ function bindEvents() {
       el("photo-meta").textContent = "";
       el("enroll-summary").classList.add("hidden");
       el("multiface-section").classList.add("hidden");
+      el("extra-review-section")?.classList.add("hidden");
       el("pending-attention-banner").classList.add("hidden");
       el("demo-note-banner").classList.add("hidden");
       el("warning-dot").classList.add("hidden");
