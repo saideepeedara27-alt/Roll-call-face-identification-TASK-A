@@ -10,7 +10,7 @@ from pathlib import Path
 import threading
 import uuid
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -41,6 +41,7 @@ from rollcall.matcher import (
     STATUS_UNKNOWN,
     match_group_faces,
 )
+from rollcall.self_check import run_startup_self_check
 
 
 def _memory_rss_mb() -> float:
@@ -558,27 +559,52 @@ def _start_enroll_job(
     return {"job_id": job_id, "total": len(file_items)}
 
 
+_STRICT_CSP = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data: blob:; "
+    "connect-src 'self'; "
+    "font-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
 def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
     state = AppState(db=db, engine=engine)
+    self_check_report = run_startup_self_check(state.db, state.engine, state.model_error)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
         state.executor.shutdown(wait=False)
 
-    app = FastAPI(title="RollCall", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="RollCall", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.rollcall = state
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = _STRICT_CSP
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
 
     @app.get("/api/health")
     def health():
         identities = state.db.list_identities()
         return {
-            "status": "ok" if state.engine is not None else "model_missing",
+            "status": "ok" if (state.engine is not None and self_check_report["ok"]) else "degraded",
             "offline_mode": True,
             "bind_host": "127.0.0.1",
             "model_ready": state.engine is not None,
             "model_version": state.engine.model_version if state.engine else None,
             "model_error": state.model_error,
+            "self_check": self_check_report,
             "enrolled_count": len(identities),
             "memory_rss_mb": _memory_rss_mb(),
             "thresholds": asdict(DEFAULT_THRESHOLDS),

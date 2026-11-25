@@ -193,3 +193,39 @@ def test_ephemeral_cache_default_and_enroll_from_path_safety(tmp_path):
     assert client.post("/api/enroll/from-path", json={"folder_path": str(tmp_path / "nope")}).status_code == 400
     assert client.post("/api/enroll/from-path", json={"folder_path": "/etc"}).status_code == 400
     assert client.post("/api/enroll/from-path", json={"folder_path": "/"}).status_code == 400
+
+
+def test_strict_csp_headers_and_startup_self_check(tmp_path):
+    from rollcall.self_check import run_startup_self_check
+
+    db = RollCallDB(db_path=tmp_path / "test_csp.db")
+    app = create_app(db=db, engine=MockFaceEngine())
+    client = TestClient(app)
+
+    resp = client.get("/")
+    assert resp.status_code == 200
+    csp = resp.headers.get("content-security-policy", "")
+    assert "default-src 'none'" in csp
+    assert "script-src 'self'" in csp
+    assert "style-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert resp.headers.get("x-frame-options") == "DENY"
+
+    health = client.get("/api/health").json()
+    assert health["self_check"]["ok"] is True
+    assert health["self_check"]["checks"]["static_assets"]["ok"] is True
+    assert health["self_check"]["checks"]["database"]["ok"] is True
+
+    # Real model checksum self-check against local models/ directory
+    from rollcall.engine import OpenCVYuNetSFaceEngine
+
+    real_engine = OpenCVYuNetSFaceEngine()
+    real_check = run_startup_self_check(db=db, engine=real_engine, model_error=None)
+    assert real_check["ok"] is True
+    assert real_check["checks"]["models"]["ok"] is True
+
+    # Failing check when model is missing
+    bad_check = run_startup_self_check(db=db, engine=None, model_error="Missing weights")
+    assert bad_check["ok"] is False
+    assert bad_check["checks"]["models"]["ok"] is False

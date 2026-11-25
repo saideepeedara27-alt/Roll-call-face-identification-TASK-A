@@ -50,8 +50,15 @@ async function fetchHealth() {
     const res = await fetch("/api/health");
     const data = await res.json();
     el("enrolled-pill-text").textContent = `${data.enrolled_count} Enrolled`;
-    if (!data.model_ready) {
-      el("model-alert").textContent = data.model_error || "Models missing. Run scripts/setup_models.py.";
+    if (!data.model_ready || (data.self_check && !data.self_check.ok)) {
+      const checkDetails = data.self_check
+        ? Object.entries(data.self_check.checks)
+            .filter(([, c]) => !c.ok)
+            .map(([name, c]) => `${name}: ${c.detail}`)
+            .join(" | ")
+        : "";
+      el("model-alert").textContent =
+        checkDetails || data.model_error || "Startup self-check failed. Run scripts/setup_models.py.";
       el("model-alert").classList.remove("hidden");
     } else {
       el("model-alert").classList.add("hidden");
@@ -110,14 +117,14 @@ function renderEnrollmentSummary(summary) {
   `;
 
   if (warnCount > 0) {
-    html += `<div style="margin-top:6px;color:var(--likely)"><strong>Warnings (${warnCount}):</strong><ul>`;
+    html += `<div class="enroll-warn-block"><strong>Warnings (${warnCount}):</strong><ul>`;
     for (const w of summary.warnings) {
       html += `<li>${escapeHtml(w.filename)}: ${escapeHtml(w.reason)}</li>`;
     }
     html += `</ul></div>`;
   }
   if (errCount > 0) {
-    html += `<div style="margin-top:6px;color:var(--unknown)"><strong>Skipped (${errCount}):</strong><ul>`;
+    html += `<div class="enroll-err-block"><strong>Skipped (${errCount}):</strong><ul>`;
     for (const e of summary.errors) {
       html += `<li>${escapeHtml(e.filename)}: ${escapeHtml(e.reason)}</li>`;
     }
@@ -137,7 +144,7 @@ function renderMultiFaceChoices(items) {
   }
   wrap.classList.remove("hidden");
   const heading = document.createElement("h3");
-  heading.style.fontSize = "13px";
+  heading.className = "multiface-heading";
   heading.textContent = `Multi-Face Reference Photos (${items.length}) — Select the target person:`;
   wrap.appendChild(heading);
 
@@ -195,7 +202,7 @@ function pollEnrollJob(jobId) {
     const stRes = await fetch(`/api/enroll/${jobId}`);
     const st = await stRes.json();
     const pct = st.total > 0 ? Math.round((st.processed / st.total) * 100) : 100;
-    el("enroll-progress-fill").style.width = `${pct}%`;
+    el("enroll-progress-bar").value = pct;
     el("enroll-progress-pct").textContent = `${pct}%`;
     el("enroll-progress-label").textContent =
       st.status === "completed" ? "Enrollment complete" : `Processing ${st.current_file || "..."}`;
@@ -226,7 +233,7 @@ async function handleFolderSelect(fileList) {
 
   const progWrap = el("enroll-progress-wrap");
   progWrap.classList.remove("hidden");
-  el("enroll-progress-fill").style.width = "5%";
+  el("enroll-progress-bar").value = 5;
   el("enroll-progress-label").textContent = `Uploading ${validFiles.length} file(s)...`;
   el("enroll-progress-pct").textContent = "5%";
 
@@ -251,7 +258,7 @@ async function handleFolderPathEnroll() {
 
   const progWrap = el("enroll-progress-wrap");
   progWrap.classList.remove("hidden");
-  el("enroll-progress-fill").style.width = "5%";
+  el("enroll-progress-bar").value = 5;
   el("enroll-progress-label").textContent = "Reading local folder...";
   el("enroll-progress-pct").textContent = "5%";
 
