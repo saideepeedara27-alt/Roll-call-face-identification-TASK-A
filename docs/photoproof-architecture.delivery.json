@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "b250caca-3850-432e-b4d0-64c06877a6fa",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/d/Downloads/BLP/.archify/architecture-photoproof/candidate.json",
+  "output": "/Users/d/Downloads/BLP/docs/photoproof-architecture.html",
+  "specification": {
+    "sha256": "e0e28c7cd07ee50b038df60c4044f649b24a54be45ac7ac945d79991a1650c06",
+    "bytes": 10169
+  },
+  "artifact": {
+    "sha256": "d34fe4b0b797ad3901f85d8549861b8c4728cc7f50ad99b8a0e47209b8007333",
+    "bytes": 959768
+  }
+}
