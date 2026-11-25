@@ -136,12 +136,16 @@ def assess_face_quality(
         reasons.append(f"Face too small ({w}x{h} px < {min_face_size_px} px)")
     if blur_laplacian < min_blur_laplacian:
         reasons.append(f"Blurry face (sharpness {blur_laplacian:.1f} < {min_blur_laplacian:.1f})")
-    if detector_score < min_detector_score:
-        reasons.append(f"Low detection confidence ({detector_score:.2f} < {min_detector_score:.2f})")
+    if detector_score < 0.35:
+        reasons.append(f"Very low detector score ({detector_score:.2f} < 0.35)")
     if brightness_mean < 25.0:
         reasons.append(f"Severely underexposed (brightness {brightness_mean:.0f}/255)")
     elif brightness_mean > 240.0:
         reasons.append(f"Severely overexposed (brightness {brightness_mean:.0f}/255)")
+
+    passed = len(reasons) == 0
+    if detector_score < min_detector_score and detector_score >= 0.35:
+        reasons.append(f"low detector score ({detector_score:.2f} < {min_detector_score:.2f})")
 
     return FaceQualityReport(
         width_px=w,
@@ -150,7 +154,7 @@ def assess_face_quality(
         blur_laplacian=round(blur_laplacian, 2),
         brightness_mean=round(brightness_mean, 1),
         detector_score=round(detector_score, 4),
-        passed=len(reasons) == 0,
+        passed=passed,
         reasons=reasons,
     )
 

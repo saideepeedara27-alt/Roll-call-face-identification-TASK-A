@@ -79,6 +79,9 @@
           <span id="photo-meta" class="photo-meta"></span>
         </div>
         <div class="toolbar-controls">
+          <button type="button" id="btn-second-look" class="btn btn-sm btn-secondary" title="Re-scan overlapping tiles for missed small faces" disabled>Second Look</button>
+          <button type="button" id="btn-draw-box" class="btn btn-sm btn-ghost" title="Draw a box around a missed face" disabled>Draw Box</button>
+          <span class="divider" aria-hidden="true"></span>
           <button type="button" id="btn-zoom-out" class="btn btn-sm btn-ghost" aria-label="Zoom out" disabled>&minus;</button>
           <span id="zoom-level" class="zoom-label">100%</span>
           <button type="button" id="btn-zoom-in" class="btn btn-sm btn-ghost" aria-label="Zoom in" disabled>+</button>
@@ -232,6 +235,7 @@
           <div class="correction-actions">
             <button type="button" id="btn-confirm-match" class="btn btn-sm btn-confirmed hidden" title="Shortcut: C">Confirm (C)</button>
             <button type="button" id="btn-mark-unknown" class="btn btn-sm btn-ghost" title="Shortcut: U">Mark unknown (U)</button>
+            <button type="button" id="btn-remove-manual-box" class="btn btn-sm btn-danger-outline hidden">Remove Manual Box</button>
           </div>
 
           <div class="assign-search-wrap">

@@ -53,6 +53,7 @@ class OpenCVYuNetSFaceEngine(FaceEngine):
                 "Run `python scripts/setup_models.py` while connected to the internet first."
             )
 
+        self._default_score_threshold = score_threshold
         self._lock = threading.Lock()
         self._detector = cv2.FaceDetectorYN.create(
             str(self._yunet_path),
@@ -68,14 +69,22 @@ class OpenCVYuNetSFaceEngine(FaceEngine):
     def model_version(self) -> str:
         return MODEL_VERSION_TAG
 
-    def detect_faces(self, bgr_image: np.ndarray) -> list[DetectedFace]:
+    def detect_faces(
+        self, bgr_image: np.ndarray, score_threshold: float | None = None
+    ) -> list[DetectedFace]:
         if bgr_image is None or bgr_image.size == 0:
             return []
 
         height, width = bgr_image.shape[:2]
         with self._lock:
-            self._detector.setInputSize((width, height))
-            _, raw_faces = self._detector.detect(bgr_image)
+            if score_threshold is not None:
+                self._detector.setScoreThreshold(float(score_threshold))
+            try:
+                self._detector.setInputSize((width, height))
+                _, raw_faces = self._detector.detect(bgr_image)
+            finally:
+                if score_threshold is not None:
+                    self._detector.setScoreThreshold(float(self._default_score_threshold))
 
         if raw_faces is None or len(raw_faces) == 0:
             return []

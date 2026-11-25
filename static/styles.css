@@ -291,6 +291,7 @@ body {
   cursor: grab;
 }
 .photo-canvas:active { cursor: grabbing; }
+.photo-canvas.draw-mode { cursor: crosshair; }
 
 .empty-dropzone {
   padding: 28px;

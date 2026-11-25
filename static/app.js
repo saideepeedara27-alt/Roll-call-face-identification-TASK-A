@@ -6,6 +6,10 @@ const state = {
   selectedFaceIndex: null,
   activeFilter: "all",
   reviewQueueActive: false,
+  drawMode: false,
+  isDrawing: false,
+  drawStartImg: null,
+  drawRectImg: null,
   zoom: 1,
   panX: 0,
   panY: 0,
@@ -468,6 +472,10 @@ async function runDemoMode() {
 function loadSessionIntoUI(data) {
   state.session = data;
   state.reviewQueueActive = false;
+  state.drawMode = false;
+  state.drawRectImg = null;
+  el("photo-canvas").classList.remove("draw-mode");
+  el("btn-draw-box").classList.remove("btn-queue-active");
   state.selectedFaceIndex = data.faces.length ? data.faces[0].face_index : null;
   state.activeFilter = "all";
   updateFilterChips();
@@ -476,9 +484,17 @@ function loadSessionIntoUI(data) {
   const timeTxt = data.processing_time_ms ? `${data.processing_time_ms} ms` : "";
   el("photo-meta").textContent = `${data.width}×${data.height}px ${timeTxt ? "• " + timeTxt : ""} • RAM: ${data.memory_rss_mb} MB`;
 
-  ["btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-export-png", "btn-export-csv"].forEach(
-    (id) => { el(id).disabled = false; }
-  );
+  [
+    "btn-second-look",
+    "btn-draw-box",
+    "btn-zoom-out",
+    "btn-zoom-in",
+    "btn-zoom-reset",
+    "btn-export-png",
+    "btn-export-csv",
+  ].forEach((id) => {
+    el(id).disabled = false;
+  });
 
   if (data.image_b64) {
     const img = new Image();
@@ -499,7 +515,7 @@ function loadSessionIntoUI(data) {
 function getReviewQueueIndices() {
   if (!state.session) return [];
   return state.session.faces
-    .filter((f) => f.status === "Likely" || f.status === "unknown")
+    .filter((f) => !f.removed && (f.status === "Likely" || f.status === "unknown"))
     .map((f) => f.face_index);
 }
 
@@ -533,7 +549,7 @@ function stepFace(delta, queueOnly = state.reviewQueueActive) {
   if (!state.session || !state.session.faces.length) return;
   const pool = queueOnly
     ? getReviewQueueIndices()
-    : state.session.faces.map((f) => f.face_index);
+    : state.session.faces.filter((f) => !f.removed).map((f) => f.face_index);
   if (!pool.length) {
     showToast("No faces remaining in Review Queue.");
     return;
@@ -647,7 +663,7 @@ function updateSummaryAndList() {
   }
 
   const filtered = state.session.faces.filter(
-    (f) => state.activeFilter === "all" || f.status === state.activeFilter
+    (f) => !f.removed && (state.activeFilter === "all" || f.status === state.activeFilter)
   );
 
   if (!filtered.length) {
@@ -692,14 +708,20 @@ function renderExplainabilityPanel() {
     panel.classList.add("hidden");
     return;
   }
-  const face = state.session.faces.find((f) => f.face_index === state.selectedFaceIndex);
+  const face = state.session.faces.find((f) => f.face_index === state.selectedFaceIndex && !f.removed);
   if (!face) {
     panel.classList.add("hidden");
     return;
   }
   panel.classList.remove("hidden");
 
-  el("explain-face-num").textContent = `Face #${face.face_index + 1}`;
+  const srcSuffix =
+    face.source === "second_look"
+      ? " • Second Look"
+      : face.source === "manual_box"
+        ? " • Manual Box"
+        : "";
+  el("explain-face-num").textContent = `Face #${face.face_index + 1}${srcSuffix}`;
   el("explain-title").textContent = face.display_name;
 
   const badge = el("explain-badge");
@@ -742,6 +764,10 @@ function renderExplainabilityPanel() {
   el("explain-reason").textContent = face.decision_reason;
 
   el("btn-confirm-match").classList.toggle("hidden", face.status !== "Likely");
+  el("btn-remove-manual-box").classList.toggle(
+    "hidden",
+    face.source !== "manual_box" || Boolean(face.removed)
+  );
 
   // Render append-only decision trail for selected face (fallback to full session if none)
   const allTrail = state.session.decision_trail || [];
@@ -802,6 +828,78 @@ async function undoLastCorrection() {
   showToast("Undid last reviewer action (recorded in trail).");
 }
 
+async function runSecondLook() {
+  if (!state.session) return;
+  setLoading(true, "Running Second Look tiled re-scan...");
+  try {
+    const res = await fetch(`/api/sessions/${state.session.session_id}/second-look`, {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.detail || "Second Look failed.");
+      return;
+    }
+    state.session = { ...state.session, ...data };
+    updateSummaryAndList();
+    renderExplainabilityPanel();
+    drawCanvas();
+    const sl = data.second_look || {};
+    showToast(
+      `Second Look (${sl.tile_grid}, 20% overlap): added ${sl.new_faces_found ?? 0} face(s) in ${sl.elapsed_ms ?? 0} ms.`
+    );
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function submitManualBox(box) {
+  if (!state.session) return;
+  setLoading(true, "Checking drawn region with YuNet + SFace...");
+  try {
+    const res = await fetch(`/api/sessions/${state.session.session_id}/manual-box`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(box),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.detail || "Could not scan region.");
+      return;
+    }
+    state.session = { ...state.session, ...data };
+    if (data.manual_box?.found && data.manual_box.added_face_index !== null) {
+      state.selectedFaceIndex = data.manual_box.added_face_index;
+    }
+    updateSummaryAndList();
+    renderExplainabilityPanel();
+    drawCanvas();
+    showToast(data.manual_box?.message || "Region scanned.");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function removeManualBox() {
+  if (!state.session || state.selectedFaceIndex === null) return;
+  const res = await fetch(
+    `/api/sessions/${state.session.session_id}/faces/${state.selectedFaceIndex}/remove`,
+    { method: "POST" }
+  );
+  const data = await res.json();
+  if (!res.ok) {
+    showToast(data.detail || "Could not remove manual box.");
+    return;
+  }
+  state.session = { ...state.session, ...data };
+  const firstActive = state.session.faces.find((f) => !f.removed);
+  state.selectedFaceIndex = firstActive ? firstActive.face_index : null;
+  updateSummaryAndList();
+  renderExplainabilityPanel();
+  drawCanvas();
+  showToast("Manual box marked removed (kept in audit trail).");
+}
+
 // Canvas Rendering, Zoom & Hit Testing
 function getCanvasMetrics() {
   const canvas = el("photo-canvas");
@@ -849,6 +947,7 @@ function drawCanvas() {
   };
 
   for (const face of state.session.faces) {
+    if (face.removed) continue;
     const [bx, by, bw, bh] = face.bbox;
     const x = m.offsetX + bx * m.scale;
     const y = m.offsetY + by * m.scale;
@@ -889,6 +988,21 @@ function drawCanvas() {
     ctx.fillRect(x, tagY, textW + 12, tagH);
     ctx.fillStyle = "#ffffff";
     ctx.fillText(label, x + 6, tagY + 14);
+    ctx.restore();
+  }
+
+  if (state.drawRectImg) {
+    const [rx, ry, rw, rh] = state.drawRectImg;
+    ctx.save();
+    ctx.strokeStyle = "#2563eb";
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(
+      m.offsetX + rx * m.scale,
+      m.offsetY + ry * m.scale,
+      rw * m.scale,
+      rh * m.scale
+    );
     ctx.restore();
   }
 }
@@ -1005,7 +1119,7 @@ function bindEvents() {
       el("pending-attention-banner").classList.add("hidden");
       el("demo-note-banner").classList.add("hidden");
       el("warning-dot").classList.add("hidden");
-      ["btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-export-png", "btn-export-csv"].forEach(
+      ["btn-second-look", "btn-draw-box", "btn-zoom-out", "btn-zoom-in", "btn-zoom-reset", "btn-export-png", "btn-export-csv"].forEach(
         (id) => { el(id).disabled = true; }
       );
       closeModal("wipe-modal");
@@ -1034,6 +1148,15 @@ function bindEvents() {
     submitCorrection({ action: "mark_unknown" }, state.reviewQueueActive)
   );
   el("btn-undo").addEventListener("click", undoLastCorrection);
+  el("btn-remove-manual-box").addEventListener("click", removeManualBox);
+  el("btn-second-look").addEventListener("click", runSecondLook);
+  el("btn-draw-box").addEventListener("click", () => {
+    if (!state.session) return;
+    state.drawMode = !state.drawMode;
+    el("photo-canvas").classList.toggle("draw-mode", state.drawMode);
+    el("btn-draw-box").classList.toggle("btn-queue-active", state.drawMode);
+    if (state.drawMode) showToast("Drag a box on the photo around a missed face.");
+  });
 
   el("btn-toggle-queue").addEventListener("click", () => {
     if (!state.session) return;
@@ -1095,19 +1218,65 @@ function bindEvents() {
 
   const canvas = el("photo-canvas");
   canvas.addEventListener("mousedown", (e) => {
+    if (state.drawMode && state.session) {
+      const m = getCanvasMetrics();
+      if (!m) return;
+      const rect = canvas.getBoundingClientRect();
+      const ix = (e.clientX - rect.left - m.offsetX) / m.scale;
+      const iy = (e.clientY - rect.top - m.offsetY) / m.scale;
+      state.isDrawing = true;
+      state.drawStartImg = [ix, iy];
+      state.drawRectImg = [ix, iy, 0, 0];
+      return;
+    }
     state.isPanning = true;
     state.didDrag = false;
     state.panStartX = e.clientX - state.panX;
     state.panStartY = e.clientY - state.panY;
   });
   window.addEventListener("mousemove", (e) => {
+    if (state.isDrawing && state.drawStartImg) {
+      const m = getCanvasMetrics();
+      if (!m) return;
+      const rect = canvas.getBoundingClientRect();
+      const ix = (e.clientX - rect.left - m.offsetX) / m.scale;
+      const iy = (e.clientY - rect.top - m.offsetY) / m.scale;
+      const [sx, sy] = state.drawStartImg;
+      state.drawRectImg = [
+        Math.min(sx, ix),
+        Math.min(sy, iy),
+        Math.abs(ix - sx),
+        Math.abs(iy - sy),
+      ];
+      drawCanvas();
+      return;
+    }
     if (!state.isPanning) return;
     state.didDrag = true;
     state.panX = e.clientX - state.panStartX;
     state.panY = e.clientY - state.panStartY;
     drawCanvas();
   });
-  window.addEventListener("mouseup", (e) => {
+  window.addEventListener("mouseup", async (e) => {
+    if (state.isDrawing) {
+      state.isDrawing = false;
+      const r = state.drawRectImg;
+      state.drawRectImg = null;
+      state.drawStartImg = null;
+      state.drawMode = false;
+      canvas.classList.remove("draw-mode");
+      el("btn-draw-box").classList.remove("btn-queue-active");
+      drawCanvas();
+      if (r && r[2] >= 10 && r[3] >= 10) {
+        await submitManualBox({
+          x: Math.max(0, Math.round(r[0])),
+          y: Math.max(0, Math.round(r[1])),
+          w: Math.round(r[2]),
+          h: Math.round(r[3]),
+        });
+      }
+      return;
+    }
     if (!state.isPanning) return;
     state.isPanning = false;
     if (!state.didDrag && state.session) {
@@ -1117,6 +1286,7 @@ function bindEvents() {
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
       for (const face of state.session.faces) {
+        if (face.removed) continue;
         const [bx, by, bw, bh] = face.bbox;
         const x = m.offsetX + bx * m.scale;
         const y = m.offsetY + by * m.scale;

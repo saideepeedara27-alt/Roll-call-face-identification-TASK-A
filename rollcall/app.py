@@ -49,6 +49,7 @@ from rollcall.matcher import (
     STATUS_UNKNOWN,
     match_group_faces,
 )
+from rollcall.second_look import run_manual_box_detection, run_tiled_second_look
 from rollcall.self_check import run_startup_self_check
 
 
@@ -66,7 +67,7 @@ def _b64_jpeg(bgr_crop) -> str:
 STATUS_CONFIRMED_REVIEWER = "Confirmed by reviewer"
 
 
-def _serialize_face_result(r: FaceMatchResult) -> dict:
+def _serialize_face_result(r: FaceMatchResult, source: str = "first_pass") -> dict:
     return {
         "face_index": r.face_index,
         "bbox": list(r.bbox),
@@ -88,6 +89,8 @@ def _serialize_face_result(r: FaceMatchResult) -> dict:
         "quality": asdict(r.quality),
         "crop_b64": r.crop_b64,
         "manually_corrected": False,
+        "source": source,
+        "removed": False,
     }
 
 
@@ -542,6 +545,8 @@ def _identify_group_image(
         "crop_bytes": crop_bytes_by_face,
         "model_version": engine.model_version,
         "calibration": calibration.to_dict(),
+        "thresholds": effective_thresholds,
+        "lookalike_pairs": calibration.flagged_pair_set(),
         "undo_stack": [],
     }
     state.store_session(session_id, session_obj)
@@ -585,20 +590,21 @@ def _build_session_response(
         identities = state.db.list_identities()
 
     faces = session_obj["faces"]
+    active_faces = [f for f in faces if not f.get("removed")]
     confirmed_auto_ids = {
         f["identity_id"]
-        for f in faces
+        for f in active_faces
         if f["status"] == STATUS_CONFIRMED and f["identity_id"]
     }
     confirmed_reviewer_ids = {
         f["identity_id"]
-        for f in faces
+        for f in active_faces
         if f["status"] == STATUS_CONFIRMED_REVIEWER and f["identity_id"]
     }
     present_ids = confirmed_auto_ids | confirmed_reviewer_ids
     likely_ids = {
         f["identity_id"]
-        for f in faces
+        for f in active_faces
         if f["status"] == STATUS_LIKELY and f["identity_id"]
     }
 
@@ -629,12 +635,12 @@ def _build_session_response(
     ]
 
     summary = {
-        "total_detected": len(faces),
-        "confirmed": sum(1 for f in faces if f["status"] == STATUS_CONFIRMED),
-        "confirmed_by_reviewer": sum(1 for f in faces if f["status"] == STATUS_CONFIRMED_REVIEWER),
+        "total_detected": len(active_faces),
+        "confirmed": sum(1 for f in active_faces if f["status"] == STATUS_CONFIRMED),
+        "confirmed_by_reviewer": sum(1 for f in active_faces if f["status"] == STATUS_CONFIRMED_REVIEWER),
         "present_total": len(present_ids),
-        "likely": sum(1 for f in faces if f["status"] == STATUS_LIKELY),
-        "unknown": sum(1 for f in faces if f["status"] == STATUS_UNKNOWN),
+        "likely": sum(1 for f in active_faces if f["status"] == STATUS_LIKELY),
+        "unknown": sum(1 for f in active_faces if f["status"] == STATUS_UNKNOWN),
         "enrolled_total": len(identities),
         "absent_count": len(absent_identities),
         "not_enrolled_count": len(not_enrolled_identities),
@@ -679,6 +685,13 @@ class CorrectionRequest(BaseModel):
     action: str  # "confirm", "assign", "mark_unknown"
     identity_id: str | None = None
     reason_note: str | None = None
+
+
+class ManualBoxRequest(BaseModel):
+    x: int
+    y: int
+    w: int
+    h: int
 
 
 _FORBIDDEN_ROOTS = (
@@ -1153,13 +1166,232 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
 
         return _build_session_response(state=state, session_obj=session_obj)
 
+    def _append_detected_faces_to_session(
+        session_obj: dict,
+        detected_list: list,
+        source: str,
+    ) -> list[dict]:
+        """Run original-pixel quality gate + SFace + folder matcher and append at end."""
+        if not detected_list:
+            return []
+        engine = _require_engine(state)
+        thresholds = session_obj["thresholds"]
+        exemplars = state.db.load_all_exemplars(engine.model_version)
+        lookalike_pairs = session_obj["lookalike_pairs"]
+        bgr = session_obj["bgr"]
+
+        start_idx = len(session_obj["faces"])
+        match_inputs: list[FaceMatchInput] = []
+        for offset, face in enumerate(detected_list):
+            f_idx = start_idx + offset
+            # Always evaluate size & blur in ORIGINAL loaded-image pixels
+            quality = assess_face_quality(
+                bgr,
+                face.bbox,
+                face.score,
+                thresholds.min_face_size_px,
+                thresholds.min_blur_laplacian,
+                thresholds.min_detector_score,
+            )
+            crop = crop_face_with_margin(bgr, face.bbox)
+            crop_jpg = encode_jpeg_bytes(crop, quality=88)
+            crop_b64 = "data:image/jpeg;base64," + base64.b64encode(crop_jpg).decode("ascii")
+            emb = engine.extract_embedding(bgr, face) if quality.passed else None
+            session_obj["embeddings"][f_idx] = emb
+            session_obj["crop_bytes"][f_idx] = crop_jpg
+            match_inputs.append(
+                FaceMatchInput(
+                    face_index=f_idx,
+                    bbox=face.bbox,
+                    quality=quality,
+                    embedding=emb,
+                    crop_b64=crop_b64,
+                )
+            )
+
+        results = match_group_faces(
+            match_inputs,
+            exemplars,
+            thresholds,
+            lookalike_pairs=lookalike_pairs,
+        )
+        added_serialized = [_serialize_face_result(r, source=source) for r in results]
+        session_obj["faces"].extend(added_serialized)
+        return added_serialized
+
+    @app.post("/api/sessions/{session_id}/second-look")
+    async def second_look_rescan(session_id: str):
+        import time
+
+        with state.lock:
+            session_obj = state.sessions.get(session_id)
+        if session_obj is None:
+            raise HTTPException(status_code=404, detail="Identification session not found.")
+
+        engine = _require_engine(state)
+        existing_boxes = [
+            tuple(f["bbox"]) for f in session_obj["faces"] if not f.get("removed")
+        ]
+
+        def _work():
+            t0 = time.perf_counter()
+            new_faces, meta = run_tiled_second_look(
+                session_obj["bgr"], engine, existing_boxes
+            )
+            added = _append_detected_faces_to_session(
+                session_obj, new_faces, source="second_look"
+            )
+            elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+            return added, meta, elapsed_ms
+
+        loop = asyncio.get_running_loop()
+        added, meta, elapsed_ms = await loop.run_in_executor(state.executor, _work)
+
+        state.db.append_trail_entry(
+            session_id=session_id,
+            group_image_sha256=session_obj["group_sha256"],
+            face_index=-1,
+            face_bbox=[0, 0, session_obj["width"], session_obj["height"]],
+            actor="reviewer",
+            action="second_look",
+            previous_status=None,
+            previous_identity_id=None,
+            previous_display_name=None,
+            new_status="completed",
+            new_identity_id=None,
+            new_display_name=f"{len(added)} face(s) added",
+            reason_note=(
+                f"grid={meta['tile_grid']}, overlap={meta['overlap_ratio']}, "
+                f"upscale={meta['tile_upscale_factor']}x, first_pass={meta['first_pass_input_size']}, "
+                f"faces_added={len(added)}"
+            ),
+        )
+        for item in added:
+            state.db.append_trail_entry(
+                session_id=session_id,
+                group_image_sha256=session_obj["group_sha256"],
+                face_index=item["face_index"],
+                face_bbox=item["bbox"],
+                actor="automated",
+                action="second_look_detection",
+                previous_status=None,
+                previous_identity_id=None,
+                previous_display_name=None,
+                new_status=item["status"],
+                new_identity_id=item["identity_id"],
+                new_display_name=item["display_name"],
+                reason_note=item["decision_reason"],
+            )
+
+        resp = _build_session_response(state=state, session_obj=session_obj)
+        resp["second_look"] = {**meta, "elapsed_ms": elapsed_ms}
+        return resp
+
+    @app.post("/api/sessions/{session_id}/manual-box")
+    async def manual_box_scan(session_id: str, req: ManualBoxRequest):
+        with state.lock:
+            session_obj = state.sessions.get(session_id)
+        if session_obj is None:
+            raise HTTPException(status_code=404, detail="Identification session not found.")
+
+        if req.w < 8 or req.h < 8:
+            raise HTTPException(status_code=400, detail="Drawn box is too small.")
+
+        engine = _require_engine(state)
+        existing_boxes = [
+            tuple(f["bbox"]) for f in session_obj["faces"] if not f.get("removed")
+        ]
+        user_box = (req.x, req.y, req.w, req.h)
+
+        def _work():
+            chosen, msg = run_manual_box_detection(
+                session_obj["bgr"], engine, user_box, existing_boxes
+            )
+            if chosen is None:
+                return [], msg
+            added = _append_detected_faces_to_session(
+                session_obj, [chosen], source="manual_box"
+            )
+            return added, msg
+
+        loop = asyncio.get_running_loop()
+        added, msg = await loop.run_in_executor(state.executor, _work)
+
+        state.db.append_trail_entry(
+            session_id=session_id,
+            group_image_sha256=session_obj["group_sha256"],
+            face_index=added[0]["face_index"] if added else -1,
+            face_bbox=list(user_box),
+            actor="reviewer",
+            action="manual_box",
+            previous_status=None,
+            previous_identity_id=None,
+            previous_display_name=None,
+            new_status=added[0]["status"] if added else "no_face",
+            new_identity_id=added[0]["identity_id"] if added else None,
+            new_display_name=added[0]["display_name"] if added else msg,
+            reason_note=f"Manual region {list(user_box)}, faces_added={len(added)}: {msg}",
+        )
+
+        resp = _build_session_response(state=state, session_obj=session_obj)
+        resp["manual_box"] = {
+            "found": len(added) > 0,
+            "message": msg,
+            "added_face_index": added[0]["face_index"] if added else None,
+        }
+        return resp
+
+    @app.post("/api/sessions/{session_id}/faces/{face_index}/remove")
+    def remove_manual_face(session_id: str, face_index: int):
+        with state.lock:
+            session_obj = state.sessions.get(session_id)
+        if session_obj is None:
+            raise HTTPException(status_code=404, detail="Identification session not found.")
+
+        face = next(
+            (f for f in session_obj["faces"] if f["face_index"] == face_index),
+            None,
+        )
+        if face is None:
+            raise HTTPException(status_code=404, detail="Face index not found.")
+        if face.get("source") != "manual_box":
+            raise HTTPException(status_code=400, detail="Only manually drawn boxes can be removed.")
+        if face.get("removed"):
+            return _build_session_response(state=state, session_obj=session_obj)
+
+        prev_status = face["status"]
+        prev_id = face["identity_id"]
+        prev_name = face["display_name"]
+
+        face["removed"] = True
+        face["status"] = "Removed"
+        face["decision_reason"] = "Manual box marked removed by reviewer."
+
+        state.db.append_trail_entry(
+            session_id=session_id,
+            group_image_sha256=session_obj["group_sha256"],
+            face_index=face_index,
+            face_bbox=face["bbox"],
+            actor="reviewer",
+            action="manual_box_removed",
+            previous_status=prev_status,
+            previous_identity_id=prev_id,
+            previous_display_name=prev_name,
+            new_status="Removed",
+            new_identity_id=None,
+            new_display_name="Removed",
+            reason_note="Manual box marked removed (preserved in audit trail).",
+        )
+        return _build_session_response(state=state, session_obj=session_obj)
+
     @app.get("/api/sessions/{session_id}/export/png")
     def export_png(session_id: str):
         with state.lock:
             session_obj = state.sessions.get(session_id)
         if session_obj is None:
             raise HTTPException(status_code=404, detail="Session not found.")
-        png_bytes = render_annotated_png(session_obj["bgr"], session_obj["faces"])
+        active = [f for f in session_obj["faces"] if not f.get("removed")]
+        png_bytes = render_annotated_png(session_obj["bgr"], active)
         stem = Path(session_obj["filename"]).stem
         return Response(
             content=png_bytes,
@@ -1174,7 +1406,8 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         if session_obj is None:
             raise HTTPException(status_code=404, detail="Session not found.")
         resp = _build_session_response(state=state, session_obj=session_obj)
-        csv_text = build_attendance_csv(resp["faces"], resp["absent_identities"])
+        active = [f for f in resp["faces"] if not f.get("removed")]
+        csv_text = build_attendance_csv(active, resp["absent_identities"])
         stem = Path(session_obj["filename"]).stem
         return Response(
             content=csv_text,

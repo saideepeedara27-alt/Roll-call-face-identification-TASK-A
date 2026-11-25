@@ -27,7 +27,9 @@ class FaceEngine(ABC):
         """Unique identifier for the detector + recognizer model pair."""
 
     @abstractmethod
-    def detect_faces(self, bgr_image: np.ndarray) -> list[DetectedFace]:
+    def detect_faces(
+        self, bgr_image: np.ndarray, score_threshold: float | None = None
+    ) -> list[DetectedFace]:
         """Detect all faces in a BGR image."""
 
     @abstractmethod

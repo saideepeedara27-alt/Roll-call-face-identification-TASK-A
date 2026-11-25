@@ -158,7 +158,8 @@ def _decide_single_face(
         else thresholds.runner_up_margin
     )
     margin_ok = margin is None or margin >= required_margin
-    if top1.similarity >= thresholds.similarity_high and margin_ok:
+    low_detector_score = face.quality.detector_score < thresholds.min_detector_score
+    if top1.similarity >= thresholds.similarity_high and margin_ok and not low_detector_score:
         return FaceMatchResult(
             face_index=face.face_index,
             bbox=face.bbox,
@@ -182,8 +183,14 @@ def _decide_single_face(
             crop_b64=face.crop_b64,
         )
 
-    # Otherwise: borderline similarity or ambiguous runner-up -> Likely (Needs Review)
-    if top1.similarity >= thresholds.similarity_high and not margin_ok:
+    # Otherwise: low detector score, borderline similarity, or ambiguous runner-up -> Likely (Needs Review)
+    if low_detector_score:
+        reason = (
+            f"low detector score ({face.quality.detector_score:.2f} < "
+            f"{thresholds.min_detector_score:.2f}); capped at Likely "
+            f"(similarity {top1.similarity:.3f})."
+        )
+    elif top1.similarity >= thresholds.similarity_high and not margin_ok:
         if is_lookalike_pair:
             reason = (
                 f"Lookalike guard active: '{top1.display_name}' ({top1.similarity:.3f}) vs "
