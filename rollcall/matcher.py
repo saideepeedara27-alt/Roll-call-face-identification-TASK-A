@@ -8,9 +8,9 @@ from rollcall.config import DEFAULT_THRESHOLDS, RecognitionThresholds
 from rollcall.image_utils import FaceQualityReport
 
 
-STATUS_CONFIRMED = "Confirmed"
-STATUS_LIKELY = "Likely"
-STATUS_UNKNOWN = "unknown"
+STATUS_CONFIRMED = "High-confidence match"
+STATUS_LIKELY = "Needs review"
+STATUS_UNKNOWN = "Unknown"
 
 
 @dataclass
@@ -140,8 +140,8 @@ def _decide_single_face(
             runner_up_margin=round(margin, 4) if margin is not None else None,
             matched_photo_id=None,
             decision_reason=(
-                f"Best similarity ({top1.similarity:.3f}, closest: {top1.display_name}) "
-                f"is below minimum threshold ({thresholds.similarity_low:.3f})."
+                "Marked Unknown because no reference was sufficiently similar "
+                f"(best: {top1.similarity:.3f} < {thresholds.similarity_low:.3f})."
             ),
             quality=face.quality,
             crop_b64=face.crop_b64,
@@ -159,7 +159,13 @@ def _decide_single_face(
     )
     margin_ok = margin is None or margin >= required_margin
     low_detector_score = face.quality.detector_score < thresholds.min_detector_score
-    if top1.similarity >= thresholds.similarity_high and margin_ok and not low_detector_score:
+    strong_profile = face.quality.pose_asymmetry >= 0.42
+    if (
+        top1.similarity >= thresholds.similarity_high
+        and margin_ok
+        and not low_detector_score
+        and not strong_profile
+    ):
         return FaceMatchResult(
             face_index=face.face_index,
             bbox=face.bbox,
@@ -172,7 +178,7 @@ def _decide_single_face(
             runner_up_margin=round(margin, 4) if margin is not None else None,
             matched_photo_id=top1.photo_id,
             decision_reason=(
-                f"Meets high threshold ({top1.similarity:.3f} >= {thresholds.similarity_high:.3f})"
+                f"High-confidence match ({top1.similarity:.3f} >= {thresholds.similarity_high:.3f})"
                 + (
                     f" with margin {margin:.3f} >= {required_margin:.3f}."
                     if margin is not None
@@ -183,30 +189,34 @@ def _decide_single_face(
             crop_b64=face.crop_b64,
         )
 
-    # Otherwise: low detector score, borderline similarity, or ambiguous runner-up -> Likely (Needs Review)
+    # Otherwise: low detector score, profile angle, borderline similarity, or ambiguous runner-up -> Needs review
     if low_detector_score:
         reason = (
-            f"low detector score ({face.quality.detector_score:.2f} < "
-            f"{thresholds.min_detector_score:.2f}); capped at Likely "
-            f"(similarity {top1.similarity:.3f})."
+            f"Needs review because detector confidence was low ({face.quality.detector_score:.2f} < "
+            f"{thresholds.min_detector_score:.2f}; possible occlusion or angle)."
+        )
+    elif strong_profile and top1.similarity >= thresholds.similarity_high and margin_ok:
+        reason = (
+            f"Needs review because face is turned toward profile (asymmetry {face.quality.pose_asymmetry:.2f}); "
+            f"please confirm '{top1.display_name}'."
         )
     elif top1.similarity >= thresholds.similarity_high and not margin_ok:
         if is_lookalike_pair:
             reason = (
-                f"Lookalike guard active: '{top1.display_name}' ({top1.similarity:.3f}) vs "
-                f"'{top2.display_name}' ({top2.similarity:.3f}), margin {margin:.3f} < "
-                f"lookalike margin {required_margin:.3f} (base margin {thresholds.runner_up_margin:.3f})."
+                f"Needs review because '{top1.display_name}' ({top1.similarity:.3f}) and "
+                f"lookalike candidate '{top2.display_name}' ({top2.similarity:.3f}) were too close "
+                f"(margin {margin:.3f} < {required_margin:.3f})."
             )
         else:
             reason = (
-                f"Ambiguous runner-up: '{top1.display_name}' ({top1.similarity:.3f}) vs "
-                f"'{top2.display_name}' ({top2.similarity:.3f}), margin {margin:.3f} < "
-                f"base margin {thresholds.runner_up_margin:.3f}."
+                f"Needs review because the top two candidates were too close: "
+                f"'{top1.display_name}' ({top1.similarity:.3f}) vs '{top2.display_name}' ({top2.similarity:.3f}), "
+                f"margin {margin:.3f} < {thresholds.runner_up_margin:.3f}."
             )
     else:
         reason = (
-            f"Borderline similarity ({top1.similarity:.3f} between {thresholds.similarity_low:.3f} "
-            f"and {thresholds.similarity_high:.3f}); human review required."
+            f"Needs review because similarity ({top1.similarity:.3f}) is below high-confidence "
+            f"threshold ({thresholds.similarity_high:.3f})."
         )
 
     return FaceMatchResult(
@@ -244,7 +254,7 @@ def match_group_faces(
     ]
 
     if not thresholds.enable_hungarian or not exemplars:
-        return results
+        return _resolve_duplicate_identity_conflicts(results)
 
     # Constrained one-to-one assignment ONLY among faces that already passed quality & similarity_low
     eligible_indices = [
@@ -322,3 +332,53 @@ def match_group_faces(
                 )
 
     return results
+
+
+def _resolve_duplicate_identity_conflicts(results: list[FaceMatchResult]) -> list[FaceMatchResult]:
+    """Keep only the highest-scoring face per identity and demote duplicates to Needs review."""
+    by_identity: dict[str, list[int]] = {}
+    for pos, res in enumerate(results):
+        if res.identity_id is not None and res.status in (STATUS_CONFIRMED, STATUS_LIKELY):
+            by_identity.setdefault(res.identity_id, []).append(pos)
+
+    updated = list(results)
+    for positions in by_identity.values():
+        if len(positions) < 2:
+            continue
+        best_pos = max(
+            positions,
+            key=lambda p: (updated[p].similarity or 0.0, -updated[p].face_index),
+        )
+        best = updated[best_pos]
+        best_sim = best.similarity or 0.0
+        for pos in positions:
+            if pos == best_pos:
+                continue
+            orig = updated[pos]
+            orig_sim = orig.similarity or 0.0
+            conflict_note = (
+                f"Needs review because Face {best.face_index + 1} also proposed "
+                f"'{best.display_name}' with higher similarity ({best_sim:.3f} vs {orig_sim:.3f}); "
+                "confirm or choose another person."
+            )
+            reason = (
+                f"{orig.decision_reason} (Duplicate conflict: Face {best.face_index + 1} also proposed '{best.display_name}'.)"
+                if orig.status == STATUS_LIKELY
+                else conflict_note
+            )
+            updated[pos] = FaceMatchResult(
+                face_index=orig.face_index,
+                bbox=orig.bbox,
+                status=STATUS_LIKELY,
+                identity_id=orig.identity_id,
+                display_name=orig.display_name,
+                similarity=orig.similarity,
+                runner_up_name=orig.runner_up_name,
+                runner_up_similarity=orig.runner_up_similarity,
+                runner_up_margin=orig.runner_up_margin,
+                matched_photo_id=orig.matched_photo_id,
+                decision_reason=reason,
+                quality=orig.quality,
+                crop_b64=orig.crop_b64,
+            )
+    return updated

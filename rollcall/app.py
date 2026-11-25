@@ -34,8 +34,8 @@ from rollcall.enrollment import (
     render_thumbnail_b64,
 )
 from rollcall.exporter import (
-    build_attendance_csv,
     build_print_attendance_html,
+    build_results_csv,
     render_annotated_png,
 )
 from rollcall.filename_parser import parse_identity_filename
@@ -73,9 +73,6 @@ def _b64_jpeg(bgr_crop) -> str:
     ).decode("ascii")
 
 
-STATUS_CONFIRMED_REVIEWER = "Confirmed by reviewer"
-
-
 def _serialize_face_result(r: FaceMatchResult, source: str = "first_pass") -> dict:
     return {
         "face_index": r.face_index,
@@ -97,6 +94,7 @@ def _serialize_face_result(r: FaceMatchResult, source: str = "first_pass") -> di
         "original_decision_reason": r.decision_reason,
         "quality": asdict(r.quality),
         "crop_b64": r.crop_b64,
+        "decision_source": "model",
         "manually_corrected": False,
         "source": source,
         "removed": False,
@@ -222,9 +220,37 @@ def _enroll_single_candidate(
             "display_name": display_name,
             "identity_id": identity_id,
             "status": "needs_attention",
+            "issue_category": "duplicate_name",
             "reason": reason_text,
             "thumb_b64": thumb_b64,
             "extra_token": token,
+        }
+
+    if not quality_dict.get("passed", True):
+        reasons_list = quality_dict.get("reasons", [])
+        reason_text = "Unusable reference image: " + "; ".join(reasons_list)
+        joined = " ".join(reasons_list).lower()
+        if "too small" in joined:
+            category = "face_too_small"
+        elif "blurry" in joined:
+            category = "blurry_image"
+        else:
+            category = "low_quality"
+        warnings.append(
+            {
+                "filename": original_filename,
+                "display_name": display_name,
+                "reason": reason_text,
+            }
+        )
+        return {
+            "filename": original_filename,
+            "display_name": display_name,
+            "identity_id": identity_id,
+            "status": "failed",
+            "issue_category": category,
+            "reason": reason_text,
+            "thumb_b64": thumb_b64,
         }
 
     state.db.add_reference_photo(
@@ -246,26 +272,8 @@ def _enroll_single_candidate(
         }
     )
 
-    if not quality_dict.get("passed", True):
-        reason_text = "Quality warning: " + "; ".join(quality_dict.get("reasons", []))
-        warnings.append(
-            {
-                "filename": original_filename,
-                "display_name": display_name,
-                "reason": reason_text,
-            }
-        )
-        return {
-            "filename": original_filename,
-            "display_name": display_name,
-            "identity_id": identity_id,
-            "status": "enrolled_with_warnings",
-            "reason": reason_text,
-            "thumb_b64": thumb_b64,
-        }
-
     if is_extra:
-        info_text = f"Extra photo merged into {display_name} (similarity {same_sim:.4f})"
+        info_text = f"Duplicate name verified (same person, similarity {same_sim:.4f}) and merged into {display_name}."
         infos.append(
             {
                 "filename": original_filename,
@@ -276,7 +284,7 @@ def _enroll_single_candidate(
     else:
         w_px = quality_dict.get("width_px", 0)
         h_px = quality_dict.get("height_px", 0)
-        info_text = f"Enrolled ({w_px}x{h_px} px)"
+        info_text = f"Loaded ({w_px}x{h_px} px)"
 
     return {
         "filename": original_filename,
@@ -372,8 +380,25 @@ def _enroll_file_list(
                     "display_name": parsed.display_name,
                     "identity_id": parsed.identity_key,
                     "status": "failed",
+                    "issue_category": "unclear_filename" if parsed.is_unclear else "unreadable_image",
                     "reason": str(exc),
                     "thumb_b64": None,
+                }
+            )
+            continue
+
+        if parsed.is_unclear:
+            reason = parsed.unclear_reason or f"Unclear filename '{parsed.original_filename}'."
+            errors.append({"filename": parsed.original_filename, "reason": reason})
+            file_records.append(
+                {
+                    "filename": parsed.original_filename,
+                    "display_name": parsed.display_name,
+                    "identity_id": parsed.identity_key,
+                    "status": "failed",
+                    "issue_category": "unclear_filename",
+                    "reason": reason,
+                    "thumb_b64": render_thumbnail_b64(loaded.bgr),
                 }
             )
             continue
@@ -428,6 +453,7 @@ def _enroll_file_list(
                     "display_name": parsed.display_name,
                     "identity_id": parsed.identity_key,
                     "status": "failed",
+                    "issue_category": "no_face",
                     "reason": reason,
                     "thumb_b64": render_thumbnail_b64(loaded.bgr),
                 }
@@ -445,6 +471,7 @@ def _enroll_file_list(
                     thresholds.min_blur_laplacian,
                     thresholds.min_detector_score,
                     size_scale=loaded.scale_factor,
+                    landmarks=face.raw_row[4:14] if len(face.raw_row) >= 14 else None,
                 ),
             )
             for face in faces
@@ -512,7 +539,8 @@ def _enroll_file_list(
                     "display_name": parsed.display_name,
                     "identity_id": parsed.identity_key,
                     "status": "needs_attention",
-                    "reason": f"{len(faces)} faces detected — select target face to enroll.",
+                    "issue_category": "multiple_faces",
+                    "reason": f"{len(faces)} faces detected — select target face to load.",
                     "thumb_b64": default_thumb,
                     "token": token,
                 }
@@ -572,7 +600,10 @@ def _enroll_file_list(
     summary = {
         "total_files": total,
         "enrolled_photos": counts["enrolled"] + counts["enrolled_with_warnings"],
+        "references_loaded": counts["enrolled"] + counts["enrolled_with_warnings"],
+        "references_rejected": counts["references_rejected"],
         "unique_identities": len(identities),
+        "identities": identities,
         "cache_hits": cache_hits,
         "counts": counts,
         "file_records": file_records,
@@ -634,6 +665,7 @@ def _identify_group_image(
             effective_thresholds.min_face_size_px,
             effective_thresholds.min_blur_laplacian,
             effective_thresholds.min_detector_score,
+            landmarks=face.raw_row[4:14] if len(face.raw_row) >= 14 else None,
         )
         crop = crop_face_with_margin(loaded.bgr, face.bbox)
         crop_b64 = _b64_jpeg(crop)
@@ -725,22 +757,6 @@ def _build_session_response(
 
     faces = session_obj["faces"]
     active_faces = [f for f in faces if not f.get("removed")]
-    confirmed_auto_ids = {
-        f["identity_id"]
-        for f in active_faces
-        if f["status"] == STATUS_CONFIRMED and f["identity_id"]
-    }
-    confirmed_reviewer_ids = {
-        f["identity_id"]
-        for f in active_faces
-        if f["status"] == STATUS_CONFIRMED_REVIEWER and f["identity_id"]
-    }
-    present_ids = confirmed_auto_ids | confirmed_reviewer_ids
-    likely_ids = {
-        f["identity_id"]
-        for f in active_faces
-        if f["status"] == STATUS_LIKELY and f["identity_id"]
-    }
 
     enrolled_ids = {p["identity_id"] for p in identities}
     with state.lock:
@@ -752,31 +768,46 @@ def _build_session_response(
                     "identity_id": iid,
                     "display_name": pend["display_name"],
                     "original_filename": pend["original_filename"],
-                    "status": "Not enrolled",
+                    "status": "Pending multi-face review",
                 }
+        enroll_summary = state.last_enrollment_summary
     not_enrolled_identities = sorted(
         not_enrolled_map.values(), key=lambda x: x["display_name"].lower()
     )
 
-    # Likely matches are NEVER counted as confirmed attendance automatically
-    absent_identities = [
-        {
-            **person,
-            "pending_review": person["identity_id"] in likely_ids,
-        }
-        for person in identities
-        if person["identity_id"] not in present_ids
-    ]
+    enroll_counts = (enroll_summary or {}).get("counts", {})
+    references_loaded = (
+        enroll_summary.get("enrolled_photos", len(identities))
+        if enroll_summary is not None
+        else sum(int(p.get("photo_count", 1)) for p in identities)
+    )
+    references_rejected = int(enroll_counts.get("references_rejected", 0))
+    references_pending = int(enroll_counts.get("needs_attention", 0))
+
+    high_confidence_count = sum(
+        1 for f in active_faces if f["status"] == STATUS_CONFIRMED
+    )
+    needs_review_count = sum(
+        1 for f in active_faces if f["status"] == STATUS_LIKELY
+    )
+    unknown_count = sum(
+        1 for f in active_faces if f["status"] == STATUS_UNKNOWN
+    )
+    manual_count = sum(
+        1 for f in active_faces if f.get("decision_source") == "manual"
+    )
 
     summary = {
+        "references_loaded": references_loaded,
+        "references_rejected": references_rejected,
+        "references_pending": references_pending,
+        "faces_detected": len(active_faces),
+        "high_confidence_matches": high_confidence_count,
+        "needs_review_faces": needs_review_count,
+        "unknown_faces": unknown_count,
+        "manual_decisions": manual_count,
         "total_detected": len(active_faces),
-        "confirmed": sum(1 for f in active_faces if f["status"] == STATUS_CONFIRMED),
-        "confirmed_by_reviewer": sum(1 for f in active_faces if f["status"] == STATUS_CONFIRMED_REVIEWER),
-        "present_total": len(present_ids),
-        "likely": sum(1 for f in active_faces if f["status"] == STATUS_LIKELY),
-        "unknown": sum(1 for f in active_faces if f["status"] == STATUS_UNKNOWN),
         "enrolled_total": len(identities),
-        "absent_count": len(absent_identities),
         "not_enrolled_count": len(not_enrolled_identities),
     }
 
@@ -787,7 +818,6 @@ def _build_session_response(
         "height": session_obj["height"],
         "faces": faces,
         "summary": summary,
-        "absent_identities": absent_identities,
         "not_enrolled_identities": not_enrolled_identities,
         "identities": identities,
         "calibration": session_obj.get("calibration") or state.last_calibration,
@@ -982,7 +1012,10 @@ def _refresh_summary_after_resolution(
         counts = build_health_counts(records)
         summary["counts"] = counts
         summary["enrolled_photos"] = counts["enrolled"] + counts["enrolled_with_warnings"]
+        summary["references_loaded"] = summary["enrolled_photos"]
+        summary["references_rejected"] = counts["references_rejected"]
         summary["unique_identities"] = len(identities)
+        summary["identities"] = identities
         summary["calibration"] = calibration
         summary["memory_rss_mb"] = _memory_rss_mb()
 
@@ -1021,40 +1054,33 @@ def _apply_extra_photo_resolution(
             "filename": pending["original_filename"],
             "display_name": pending["display_name"],
             "identity_id": pending["identity_id"],
-            "status": "ignored",
+            "status": "rejected",
+            "issue_category": "duplicate_name",
             "reason": "Rejected by reviewer (may be a different person; kept out of matching).",
-            "thumb_b64": None,
+            "thumb_b64": pending.get("thumb_b64"),
         }
         outcome_status = "rejected"
     else:
-        state.db.add_reference_photo(
-            identity_id=pending["identity_id"],
-            display_name=pending["display_name"],
-            original_filename=pending["original_filename"],
-            image_sha256=pending["image_sha256"],
-            model_version=pending["model_version"],
-            embedding=pending["embedding"],
-            crop_jpeg=pending["crop_jpeg"],
-            quality_dict=pending["quality"],
-            persist_cache=pending["persist_cache"],
-        )
         quality_passed = pending["quality"].get("passed", True)
         if not quality_passed:
             reason_text = (
-                f"Extra photo kept by reviewer (quality warning: "
+                "Rejected after review (image quality gate failed: "
                 + "; ".join(pending["quality"].get("reasons", []))
-                + f"; similarity {pending['similarity']:.4f})."
+                + ")."
             )
-            outcome_status = "enrolled_with_warnings"
-            if summary is not None:
-                summary["warnings"].append(
-                    {
-                        "filename": pending["original_filename"],
-                        "display_name": pending["display_name"],
-                        "reason": reason_text,
-                    }
-                )
+            outcome_status = "failed"
         else:
+            state.db.add_reference_photo(
+                identity_id=pending["identity_id"],
+                display_name=pending["display_name"],
+                original_filename=pending["original_filename"],
+                image_sha256=pending["image_sha256"],
+                model_version=pending["model_version"],
+                embedding=pending["embedding"],
+                crop_jpeg=pending["crop_jpeg"],
+                quality_dict=pending["quality"],
+                persist_cache=pending["persist_cache"],
+            )
             reason_text = (
                 f"Extra photo kept by reviewer and added to {pending['display_name']} "
                 f"(similarity {pending['similarity']:.4f})."
@@ -1150,7 +1176,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         yield
         state.executor.shutdown(wait=False)
 
-    app = FastAPI(title="RollCall", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="PhotoProof", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.rollcall = state
 
     @app.middleware("http")
@@ -1299,6 +1325,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             "display_name": face["display_name"],
             "matched_photo_id": face["matched_photo_id"],
             "decision_reason": face["decision_reason"],
+            "decision_source": face.get("decision_source", "model"),
             "manually_corrected": face["manually_corrected"],
         }
         prev_status = face["status"]
@@ -1307,14 +1334,15 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         note = (req.reason_note or "").strip() or None
 
         if req.action == "confirm":
-            if prev_status != STATUS_LIKELY or not face["identity_id"]:
+            if not face["identity_id"]:
                 raise HTTPException(
                     status_code=400,
-                    detail="Confirm (C) applies only to Likely matches; use Assign (A) for unknown faces.",
+                    detail="Confirm applies only when a proposed person exists; choose a person first.",
                 )
-            face["status"] = STATUS_CONFIRMED_REVIEWER
+            face["status"] = STATUS_CONFIRMED
+            face["decision_source"] = "manual"
             face["decision_reason"] = (
-                "Confirmed by reviewer after inspecting reference photo."
+                "Confirmed manually after inspecting Evidence Card."
                 + (f" Note: {note}" if note else "")
             )
             face["manually_corrected"] = True
@@ -1332,10 +1360,11 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             )
             face["identity_id"] = target["identity_id"]
             face["display_name"] = target["display_name"]
-            face["status"] = STATUS_CONFIRMED_REVIEWER
+            face["status"] = STATUS_CONFIRMED
             face["matched_photo_id"] = ref_photo
+            face["decision_source"] = "manual"
             face["decision_reason"] = (
-                f"Assigned to {target['display_name']} by reviewer."
+                f"Assigned manually to {target['display_name']}."
                 + (f" Note: {note}" if note else "")
             )
             face["manually_corrected"] = True
@@ -1344,8 +1373,9 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             face["display_name"] = STATUS_UNKNOWN
             face["status"] = STATUS_UNKNOWN
             face["matched_photo_id"] = None
+            face["decision_source"] = "manual"
             face["decision_reason"] = (
-                "Marked as unknown by reviewer." + (f" Note: {note}" if note else "")
+                "Marked Unknown manually." + (f" Note: {note}" if note else "")
             )
             face["manually_corrected"] = True
         else:
@@ -1407,6 +1437,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         face["display_name"] = snap["display_name"]
         face["matched_photo_id"] = snap["matched_photo_id"]
         face["decision_reason"] = snap["decision_reason"]
+        face["decision_source"] = snap.get("decision_source", "model")
         face["manually_corrected"] = snap["manually_corrected"]
 
         state.db.append_trail_entry(
@@ -1453,6 +1484,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
                 thresholds.min_face_size_px,
                 thresholds.min_blur_laplacian,
                 thresholds.min_detector_score,
+                landmarks=face.raw_row[4:14] if len(face.raw_row) >= 14 else None,
             )
             crop = crop_face_with_margin(bgr, face.bbox)
             crop_jpg = encode_jpeg_bytes(crop, quality=88)
@@ -1657,7 +1689,7 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
         return Response(
             content=png_bytes,
             media_type="image/png",
-            headers={"Content-Disposition": f'attachment; filename="rollcall_{stem}_annotated.png"'},
+            headers={"Content-Disposition": f'attachment; filename="photoproof_{stem}_annotated.png"'},
         )
 
     @app.get("/api/sessions/{session_id}/export/csv")
@@ -1668,12 +1700,12 @@ def create_app(db: RollCallDB | None = None, engine=None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Session not found.")
         resp = _build_session_response(state=state, session_obj=session_obj)
         active = [f for f in resp["faces"] if not f.get("removed")]
-        csv_text = build_attendance_csv(active, resp["absent_identities"])
+        csv_text = build_results_csv(active)
         stem = Path(session_obj["filename"]).stem
         return Response(
             content=csv_text,
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="rollcall_{stem}_attendance.csv"'},
+            headers={"Content-Disposition": f'attachment; filename="photoproof_{stem}_results.csv"'},
         )
 
     @app.get("/api/sessions/{session_id}/export/print")

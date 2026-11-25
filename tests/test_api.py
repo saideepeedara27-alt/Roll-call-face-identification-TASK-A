@@ -101,11 +101,11 @@ def test_health_enroll_identify_correct_export_and_wipe(tmp_path):
     )
     assert id_resp.status_code == 200
     data = id_resp.json()
-    assert data["summary"]["total_detected"] == 2
-    assert data["summary"]["confirmed"] == 1
-    assert data["summary"]["unknown"] == 1
+    assert data["summary"]["faces_detected"] == 2
+    assert data["summary"]["high_confidence_matches"] == 1
+    assert data["summary"]["unknown_faces"] == 1
     assert data["faces"][0]["display_name"] == "Priya Sharma"
-    assert data["faces"][1]["display_name"] == "unknown"
+    assert data["faces"][1]["display_name"] == "Unknown"
 
     session_id = data["session_id"]
 
@@ -115,8 +115,9 @@ def test_health_enroll_identify_correct_export_and_wipe(tmp_path):
         json={"face_index": 1, "action": "assign", "identity_id": "priya_sharma", "reason_note": "Side angle"},
     )
     assert corr.status_code == 200
-    assert corr.json()["summary"]["confirmed"] == 1
-    assert corr.json()["summary"]["confirmed_by_reviewer"] == 1
+    assert corr.json()["summary"]["high_confidence_matches"] == 2
+    assert corr.json()["summary"]["manual_decisions"] == 1
+    assert corr.json()["faces"][1]["decision_source"] == "manual"
     assert corr.json()["summary"]["enrolled_total"] == 1
 
     # 5. Export PNG and CSV
@@ -128,9 +129,10 @@ def test_health_enroll_identify_correct_export_and_wipe(tmp_path):
     csv_resp = client.get(f"/api/sessions/{session_id}/export/csv")
     assert csv_resp.status_code == 200
     assert "Priya Sharma" in csv_resp.text
-    assert "Confirmed by reviewer" in csv_resp.text
+    assert "Manual decision" in csv_resp.text
+    assert "Absent" not in csv_resp.text
 
-    # 6. Wipe All Data clears everything including decision trail
+    # 6. Clear session wipes everything including decision trail
     wipe = client.post("/api/wipe")
     assert wipe.status_code == 200
     assert wipe.json()["deleted"]["identities"] == 1
@@ -145,7 +147,8 @@ def test_frontend_serves_locally_with_zero_external_urls(tmp_path):
 
     index_resp = client.get("/")
     assert index_resp.status_code == 200
-    assert "RollCall" in index_resp.text
+    assert "PhotoProof" in index_resp.text
+    assert "Attendance" not in index_resp.text
     assert "http://" not in index_resp.text
     assert "https://" not in index_resp.text
 

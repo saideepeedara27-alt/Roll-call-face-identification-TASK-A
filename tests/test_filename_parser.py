@@ -27,3 +27,11 @@ def test_path_traversal_stripped():
     parsed = parse_identity_filename("../../secret/Meera_Nair.jpg")
     assert parsed.original_filename == "Meera_Nair.jpg"
     assert parsed.identity_key == "meera_nair"
+    assert parsed.is_unclear is False
+
+
+def test_unclear_camera_and_generic_filenames_flagged():
+    for bad in ("IMG_1234.jpg", "DSC_0042.png", "Screenshot_2026.png", "123456.jpg", "photo_1.jpeg"):
+        parsed = parse_identity_filename(bad)
+        assert parsed.is_unclear is True, f"Expected unclear filename flag for {bad}"
+        assert parsed.unclear_reason

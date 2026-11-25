@@ -97,6 +97,7 @@ def build_health_counts(file_records: list[dict]) -> dict:
         "enrolled_with_warnings": 0,
         "needs_attention": 0,
         "failed": 0,
+        "rejected": 0,
         "ignored": 0,
     }
     for rec in file_records:
@@ -104,14 +105,16 @@ def build_health_counts(file_records: list[dict]) -> dict:
         if st in counts:
             counts[st] += 1
 
+    counts["references_rejected"] = counts["failed"] + counts["rejected"]
+
     parts = [
-        f"{counts['enrolled']} enrolled",
-        f"{counts['enrolled_with_warnings']} enrolled with warnings",
+        f"{counts['enrolled'] + counts['enrolled_with_warnings']} loaded",
     ]
     if counts["needs_attention"] > 0:
         parts.append(f"{counts['needs_attention']} needs attention")
-    parts.append(f"{counts['failed']} failed")
-    parts.append(f"{counts['ignored']} ignored")
+    parts.append(f"{counts['references_rejected']} rejected")
+    if counts["ignored"] > 0:
+        parts.append(f"{counts['ignored']} ignored")
 
     counts["headline"] = f"{counts['selected']} selected = " + ", ".join(parts)
     return counts

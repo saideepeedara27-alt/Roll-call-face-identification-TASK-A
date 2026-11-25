@@ -96,14 +96,15 @@ def test_review_actions_undo_append_only_trail_attendance_and_wipe(tmp_path):
     data = grp.json()
     sid = data["session_id"]
 
-    # Initial states: 0=Confirmed(Priya), 1=Likely(Rahul), 2=unknown
-    assert data["faces"][0]["status"] == "Confirmed"
-    assert data["faces"][1]["status"] == "Likely"
-    assert data["faces"][2]["status"] == "unknown"
-    assert data["summary"]["confirmed"] == 1
-    assert data["summary"]["confirmed_by_reviewer"] == 0
-    assert data["summary"]["absent_count"] == 1  # Rahul is Absent while Likely!
-    assert [a["display_name"] for a in data["absent_identities"]] == ["Rahul Verma"]
+    # Initial states: 0=High-confidence match(Priya), 1=Needs review(Rahul), 2=Unknown
+    assert data["faces"][0]["status"] == "High-confidence match"
+    assert data["faces"][1]["status"] == "Needs review"
+    assert data["faces"][2]["status"] == "Unknown"
+    assert data["faces"][0]["decision_source"] == "model"
+    assert data["summary"]["high_confidence_matches"] == 1
+    assert data["summary"]["needs_review_faces"] == 1
+    assert data["summary"]["unknown_faces"] == 1
+    assert data["summary"]["manual_decisions"] == 0
 
     # 1. enroll_new is disabled (400)
     bad_enroll = client.post(
@@ -112,46 +113,47 @@ def test_review_actions_undo_append_only_trail_attendance_and_wipe(tmp_path):
     )
     assert bad_enroll.status_code == 400
 
-    # 2. Confirm (C) on unknown face does nothing / rejected (400)
+    # 2. Confirm on Unknown face does nothing / rejected (400)
     bad_confirm = client.post(
         f"/api/sessions/{sid}/correct",
         json={"face_index": 2, "action": "confirm"},
     )
     assert bad_confirm.status_code == 400
 
-    # 3. Confirm (C) on Likely Rahul -> "Confirmed by reviewer", attendance recomputes!
+    # 3. Confirm on Needs review Rahul -> High-confidence match + Manual decision!
     conf = client.post(
         f"/api/sessions/{sid}/correct",
         json={"face_index": 1, "action": "confirm", "reason_note": "Verified glasses"},
     )
     assert conf.status_code == 200
     c_data = conf.json()
-    assert c_data["faces"][1]["status"] == "Confirmed by reviewer"
-    assert c_data["faces"][1]["original_status"] == "Likely"
+    assert c_data["faces"][1]["status"] == "High-confidence match"
+    assert c_data["faces"][1]["decision_source"] == "manual"
+    assert c_data["faces"][1]["original_status"] == "Needs review"
     assert c_data["faces"][1]["original_display_name"] == "Rahul Verma"
-    assert c_data["summary"]["confirmed"] == 1
-    assert c_data["summary"]["confirmed_by_reviewer"] == 1
-    assert c_data["summary"]["absent_count"] == 0  # Rahul moved from Absent to Present!
+    assert c_data["summary"]["high_confidence_matches"] == 2
+    assert c_data["summary"]["manual_decisions"] == 1
     assert c_data["can_undo"] is True
 
-    # 4. Reject Rahul to unknown -> Rahul moves back to Absent!
+    # 4. Mark Unknown on Rahul -> Unknown + Manual decision
     rej = client.post(
         f"/api/sessions/{sid}/correct",
         json={"face_index": 1, "action": "mark_unknown", "reason_note": "Actually not Rahul"},
     )
     assert rej.status_code == 200
     r_data = rej.json()
-    assert r_data["faces"][1]["status"] == "unknown"
-    assert r_data["summary"]["confirmed_by_reviewer"] == 0
-    assert r_data["summary"]["absent_count"] == 1
-    assert [a["display_name"] for a in r_data["absent_identities"]] == ["Rahul Verma"]
+    assert r_data["faces"][1]["status"] == "Unknown"
+    assert r_data["faces"][1]["decision_source"] == "manual"
+    assert r_data["summary"]["high_confidence_matches"] == 1
+    assert r_data["summary"]["unknown_faces"] == 2
 
-    # 5. Undo (Z) restores "Confirmed by reviewer" and appends undo entry (never deletes trail!)
+    # 5. Undo reverts face 1 to High-confidence match (Manual decision) and appends undo entry
     undone = client.post(f"/api/sessions/{sid}/undo")
     assert undone.status_code == 200
     u_data = undone.json()
-    assert u_data["faces"][1]["status"] == "Confirmed by reviewer"
-    assert u_data["summary"]["absent_count"] == 0
+    assert u_data["faces"][1]["status"] == "High-confidence match"
+    assert u_data["faces"][1]["decision_source"] == "manual"
+    assert u_data["summary"]["high_confidence_matches"] == 2
 
     # Trail is append-only: 3 automated initial + 3 reviewer (confirm, mark_unknown, undo) = 6 rows
     trail = u_data["decision_trail"]
@@ -165,22 +167,21 @@ def test_review_actions_undo_append_only_trail_attendance_and_wipe(tmp_path):
     assert face1_trail[1]["face_bbox"] == [260, 40, 120, 120]
     assert face1_trail[1]["reason_note"] == "Verified glasses"
 
-    # 6. Wipe All Data deletes decision_trail cleanly
+    # 6. Clear session deletes decision_trail cleanly
     wipe = client.post("/api/wipe")
     assert wipe.status_code == 200
     assert wipe.json()["deleted"]["decision_trail"] == 6
     assert db.get_session_trail(sid) == []
 
 
-def test_frontend_keyboard_queue_and_input_guard_contract():
+def test_frontend_evidence_card_and_results_list_contract():
+    html_text = Path("static/index.html").read_text(encoding="utf-8")
     js_text = Path("static/app.js").read_text(encoding="utf-8")
-    # Queue filters strictly to Likely and unknown
-    assert 'f.status === "Likely" || f.status === "unknown"' in js_text
-    # Shortcuts ignored while typing in inputs/selects/textareas
-    assert '["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)' in js_text
-    # J/K used for navigation instead of arrow keys
-    assert 'k === "j"' in js_text and 'k === "k"' in js_text
-    assert "ArrowDown" not in js_text and "ArrowUp" not in js_text
-    # Searchable type-to-filter box for Assign (A)
-    assert "assign-search-input" in js_text
-    assert 'k === "z"' in js_text
+    assert 'id="evidence-card"' in html_text
+    assert 'id="results-list"' in html_text
+    assert 'id="ev-person-select"' in html_text
+    assert "Manual decision" in js_text
+    assert "Model suggestion" in js_text
+    assert "High-confidence match" in js_text
+    assert "Needs review" in js_text
+    assert "Unknown" in js_text

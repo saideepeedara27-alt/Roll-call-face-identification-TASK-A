@@ -51,3 +51,22 @@ def test_quality_gate_rejects_small_and_flat_face():
     assert report.passed is False
     assert any("too small" in r.lower() for r in report.reasons)
     assert any("blurry" in r.lower() for r in report.reasons)
+
+
+def test_quality_gate_surfaces_profile_angle_from_landmarks():
+    rng = np.random.default_rng(1)
+    textured = rng.integers(40, 220, size=(120, 120, 3), dtype=np.uint8)
+    # Asymmetric 5-point landmarks: nose far closer to left eye than right eye (strong profile)
+    landmarks = np.array([30.0, 50.0, 80.0, 50.0, 79.0, 62.0, 38.0, 80.0, 70.0, 80.0], dtype=np.float32)
+    report = assess_face_quality(
+        bgr_image=textured,
+        bbox=(10, 10, 90, 90),
+        detector_score=0.92,
+        min_face_size_px=28,
+        min_blur_laplacian=35.0,
+        min_detector_score=0.65,
+        landmarks=landmarks,
+    )
+    assert report.passed is True
+    assert report.pose_asymmetry >= 0.42
+    assert any("profile angle" in r.lower() for r in report.reasons)

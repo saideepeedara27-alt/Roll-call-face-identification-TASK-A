@@ -168,7 +168,7 @@ def test_second_look_seam_stability_idempotence_tiny_reject_manual_and_low_score
 
     # Existing face #0 stayed untouched at index 0
     assert d1["faces"][0]["face_index"] == 0
-    assert d1["faces"][0]["status"] == "unknown"
+    assert d1["faces"][0]["status"] == "Unknown"
     assert d1["faces"][0]["manually_corrected"] is True
 
     # New faces appended at indices 1 and 2
@@ -177,13 +177,13 @@ def test_second_look_seam_stability_idempotence_tiny_reject_manual_and_low_score
     assert d1["faces"][2]["face_index"] == 2
     assert d1["faces"][2]["source"] == "second_look"
 
-    # Tiny face (20x20) rejected by original-pixel quality gate -> unknown
+    # Tiny face (20x20) rejected by original-pixel quality gate -> Unknown
     tiny_face = next(f for f in d1["faces"][1:] if f["quality"]["min_side_px"] < 28)
-    assert tiny_face["status"] == "unknown"
+    assert tiny_face["status"] == "Unknown"
     assert "too small" in tiny_face["decision_reason"].lower()
 
     seam_face = next(f for f in d1["faces"][1:] if f["quality"]["min_side_px"] >= 28)
-    assert seam_face["status"] == "Confirmed"
+    assert seam_face["status"] == "High-confidence match"
 
     # 2. Running Second Look a second time adds NOTHING
     sl2 = client.post(f"/api/sessions/{sid}/second-look")
@@ -201,7 +201,7 @@ def test_second_look_seam_stability_idempotence_tiny_reject_manual_and_low_score
     assert "No aligned face detected" in mb_empty.json()["manual_box"]["message"]
     assert len(mb_empty.json()["faces"]) == 3
 
-    # 4. Manual box on textured region -> low detector score (0.42 < 0.65) caps at Likely, never Confirmed!
+    # 4. Manual box on textured region -> low detector score (0.42 < 0.65) caps at Needs review!
     mb_low = client.post(
         f"/api/sessions/{sid}/manual-box",
         json={"x": 220, "y": 350, "w": 160, "h": 160},
@@ -213,8 +213,8 @@ def test_second_look_seam_stability_idempotence_tiny_reject_manual_and_low_score
     assert added_idx == 3
     manual_face = m_data["faces"][3]
     assert manual_face["source"] == "manual_box"
-    assert manual_face["status"] == "Likely"  # Never Confirmed!
-    assert "low detector score" in manual_face["decision_reason"].lower()
+    assert manual_face["status"] == "Needs review"
+    assert "detector confidence was low" in manual_face["decision_reason"].lower()
 
     # 5. Removing manual box marks removed=True (not deleted) and logs to trail
     rem = client.post(f"/api/sessions/{sid}/faces/{added_idx}/remove")
@@ -223,7 +223,7 @@ def test_second_look_seam_stability_idempotence_tiny_reject_manual_and_low_score
     assert len(rem_data["faces"]) == 4
     assert rem_data["faces"][3]["removed"] is True
     assert rem_data["faces"][3]["status"] == "Removed"
-    assert rem_data["summary"]["total_detected"] == 3  # Active faces only
+    assert rem_data["summary"]["faces_detected"] == 3  # Active faces only
     actions = [t["action"] for t in rem_data["decision_trail"]]
     assert "second_look" in actions
     assert "manual_box" in actions

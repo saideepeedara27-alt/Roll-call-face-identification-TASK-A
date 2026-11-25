@@ -105,9 +105,9 @@ def test_open_set_confirmed_likely_and_unknown():
     assert results[1].status == STATUS_LIKELY
     assert results[1].display_name == "Rahul Verma"
     assert results[2].status == STATUS_UNKNOWN
-    assert results[2].display_name == "unknown"
+    assert results[2].display_name == "Unknown"
     assert results[3].status == STATUS_UNKNOWN  # Quality gate blocks even exact embedding
-    assert results[3].display_name == "unknown"
+    assert results[3].display_name == "Unknown"
 
 
 def test_hungarian_never_upgrades_weak_or_likely_match():
@@ -161,4 +161,54 @@ def test_unknown_below_threshold_keeps_runner_up_distinct_from_top1():
     assert res.runner_up_name == "Bob"
     assert abs(res.runner_up_similarity - 0.1574) < 1e-3
     assert abs((res.similarity - res.runner_up_similarity) - res.runner_up_margin) < 1e-3
-    assert "closest: Alice" in res.decision_reason
+    assert "no reference was sufficiently similar" in res.decision_reason.lower()
+
+
+def test_duplicate_identity_conflict_keeps_highest_and_demotes_lower_to_needs_review():
+    v_priya = _unit_vec(1)
+    v_other = _unit_vec(2)
+    exemplars = [
+        {"photo_id": 1, "identity_id": "priya_sharma", "display_name": "Priya Sharma", "original_filename": "Priya.jpg", "embedding": v_priya},
+        {"photo_id": 2, "identity_id": "ananya_rao", "display_name": "Ananya Rao", "original_filename": "Ananya.jpg", "embedding": v_other},
+    ]
+    v_strong = 0.90 * v_priya + np.sqrt(1 - 0.90**2) * _unit_vec(30)
+    v_weaker = 0.65 * v_priya + np.sqrt(1 - 0.65**2) * _unit_vec(31)
+    faces = [
+        FaceMatchInput(0, (0, 0, 80, 80), _good_quality(), v_weaker, ""),
+        FaceMatchInput(1, (100, 0, 80, 80), _good_quality(), v_strong, ""),
+    ]
+    thresholds = RecognitionThresholds(similarity_high=0.45, similarity_low=0.35, runner_up_margin=0.05)
+    results = match_group_faces(faces, exemplars, thresholds)
+
+    assert results[1].status == STATUS_CONFIRMED
+    assert results[1].display_name == "Priya Sharma"
+    assert results[0].status == STATUS_LIKELY
+    assert "face 2 also proposed" in results[0].decision_reason.lower()
+
+
+def test_csv_export_escapes_formula_prefixes_and_marks_manual_decisions():
+    from rollcall.exporter import build_results_csv
+
+    csv_text = build_results_csv(
+        [
+            {
+                "face_index": 0,
+                "display_name": "=CMD('calc')",
+                "status": "High-confidence match",
+                "decision_source": "manual",
+                "original_status": "Needs review",
+                "original_display_name": "Priya, \"P\"",
+                "similarity": 0.42,
+                "runner_up_name": "+Bob",
+                "runner_up_margin": 0.04,
+                "bbox": [1, 2, 3, 4],
+                "quality": {"width_px": 50, "height_px": 50, "blur_laplacian": 100.0},
+                "decision_reason": "-check formula",
+            }
+        ]
+    )
+    assert "'=CMD('calc')" in csv_text
+    assert "'+Bob" in csv_text
+    assert "'-check formula" in csv_text
+    assert "Manual decision" in csv_text
+    assert '"Priya, ""P"""' in csv_text

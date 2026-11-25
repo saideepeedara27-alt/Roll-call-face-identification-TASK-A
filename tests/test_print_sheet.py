@@ -81,16 +81,16 @@ def test_print_sheet_escaping_no_thumbs_state_changes_and_wipe(tmp_path):
     assert "<img src=x" not in html1.lower()
     assert "&lt;img" in html1 and "onerror=alert(1)&gt;" in html1.lower()
     assert "<img " not in html1  # No face thumbnails by default
-    assert "DEMO DATA" not in html1
+    assert "SAMPLE DEMO DATA" not in html1
     assert 'class="appendix"' in html1
 
-    # 2. Reviewer confirms face #1 with XSS note -> reflected on print sheet; Undo reverts it!
+    # 2. Reviewer confirms face #1 with XSS note -> reflected as Manual decision; Undo reverts it!
     client.post(
         f"/api/sessions/{sid}/correct",
         json={"face_index": 1, "action": "confirm", "reason_note": "<script>alert(1)</script>"},
     )
     pr2 = client.get(f"/api/sessions/{sid}/export/print")
-    assert "Confirmed by reviewer" in pr2.text
+    assert "Manual decision" in pr2.text
     assert "<script>alert(1)</script>" not in pr2.text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in pr2.text
 
@@ -103,7 +103,7 @@ def test_print_sheet_escaping_no_thumbs_state_changes_and_wipe(tmp_path):
     assert "break-inside: avoid" in css
     assert "break-before: page" in css
 
-    # 4. Wipe All Data returns 404 (nothing) for print sheet
+    # 4. Clear session returns 404 for summary sheet
     assert client.post("/api/wipe").status_code == 200
     assert client.get(f"/api/sessions/{sid}/export/print").status_code == 404
 
@@ -119,5 +119,5 @@ def test_demo_print_sheet_shows_demo_data_banner(tmp_path):
 
     pr = client.get(f"/api/sessions/{sid}/export/print")
     assert pr.status_code == 200
-    assert "DEMO DATA" in pr.text
+    assert "SAMPLE DEMO DATA" in pr.text
     assert "<img " not in pr.text

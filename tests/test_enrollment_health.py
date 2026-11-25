@@ -113,7 +113,7 @@ def test_enrollment_health_studio_counts_merge_mismatch_multiface_and_system_ign
 
     # Same-person extra photo merges as info, NOT warning
     assert records_by_name["priya_sharma.png"]["status"] == "enrolled"
-    assert "Extra photo merged into Priya Sharma" in records_by_name["priya_sharma.png"]["reason"]
+    assert "Duplicate name verified" in records_by_name["priya_sharma.png"]["reason"]
 
     # Suspicious extra photo (< T_high) is held out of matching in needs_attention with side-by-side thumbs
     assert records_by_name["Priya Sharma (2).jpg"]["status"] == "needs_attention"
@@ -136,7 +136,7 @@ def test_enrollment_health_studio_counts_merge_mismatch_multiface_and_system_ign
     assert records_by_name["meta.jpg"]["status"] == "ignored"
     assert records_by_name["Blank.jpg"]["status"] == "failed"
 
-    # Before resolving Arjun Mehta, group photo upload works non-blockingly and lists Arjun as Not enrolled
+    # Before resolving Arjun Mehta, group photo upload works non-blockingly and lists Arjun as Pending multi-face review
     grp_resp = client.post(
         "/api/identify",
         files={"file": ("group.jpg", priya_img, "image/jpeg")},
@@ -145,7 +145,7 @@ def test_enrollment_health_studio_counts_merge_mismatch_multiface_and_system_ign
     grp_data = grp_resp.json()
     assert len(grp_data["not_enrolled_identities"]) == 1
     assert grp_data["not_enrolled_identities"][0]["display_name"] == "Arjun Mehta"
-    assert grp_data["not_enrolled_identities"][0]["status"] == "Not enrolled"
+    assert grp_data["not_enrolled_identities"][0]["status"] == "Pending multi-face review"
 
     # Now user resolves multi-face Arjun Mehta -> moves from needs_attention to enrolled
     res = client.post(
@@ -158,7 +158,7 @@ def test_enrollment_health_studio_counts_merge_mismatch_multiface_and_system_ign
     assert updated_counts["enrolled"] == 3
     assert updated_counts["needs_attention"] == 1
 
-    # Rejecting flagged extra photo clears needs_attention without enrolling it
+    # Rejecting flagged extra photo clears needs_attention and counts as rejected
     rej = client.post(
         "/api/enroll/resolve-extra",
         json={"token": extra_pend["token"], "decision": "reject"},
@@ -166,12 +166,14 @@ def test_enrollment_health_studio_counts_merge_mismatch_multiface_and_system_ign
     assert rej.status_code == 200
     final_counts = rej.json()["summary"]["counts"]
     assert final_counts["needs_attention"] == 0
-    assert final_counts["ignored"] == 4
+    assert final_counts["rejected"] == 1
+    assert final_counts["references_rejected"] == 2
     assert (
         final_counts["enrolled"]
         + final_counts["enrolled_with_warnings"]
         + final_counts["needs_attention"]
         + final_counts["failed"]
+        + final_counts["rejected"]
         + final_counts["ignored"]
         == final_counts["selected"]
     )
@@ -258,7 +260,7 @@ def test_extra_photo_049_holdout_reject_and_keep_with_calibrated_t_high(tmp_path
 
     recs = {r["filename"]: r for r in summary["file_records"]}
     assert recs["Member A_2.png"]["status"] == "enrolled"
-    assert "Extra photo merged into Member A" in recs["Member A_2.png"]["reason"]
+    assert "Duplicate name verified" in recs["Member A_2.png"]["reason"]
 
     assert recs["Member C_2.png"]["status"] == "needs_attention"
     assert "may be a different person" in recs["Member C_2.png"]["reason"].lower()
@@ -269,12 +271,12 @@ def test_extra_photo_049_holdout_reject_and_keep_with_calibrated_t_high(tmp_path
     assert pend["existing_thumb_b64"].startswith("data:image/jpeg;base64,")
     assert pend["new_thumb_b64"].startswith("data:image/jpeg;base64,")
 
-    # Held photo is NOT in DB exemplars and NOT used for matching (probe returns unknown)
+    # Held photo is NOT in DB exemplars and NOT used for matching (probe returns Unknown)
     exemplars_before = db.load_all_exemplars(engine.model_version)
     assert [e["original_filename"] for e in exemplars_before if e["identity_id"] == "member_c"] == ["Member C.png"]
     probe_img = _make_solid_tag_png(140)
     ident_held = client.post("/api/identify", files={"file": ("probe.png", probe_img, "image/png")}).json()
-    assert ident_held["faces"][0]["status"] == "unknown"
+    assert ident_held["faces"][0]["status"] == "Unknown"
 
     # Rejecting it removes it from pending review without adding to exemplars
     rej = client.post("/api/enroll/resolve-extra", json={"token": pend["token"], "decision": "reject"})
@@ -283,7 +285,7 @@ def test_extra_photo_049_holdout_reject_and_keep_with_calibrated_t_high(tmp_path
     assert rej.json()["summary"]["counts"]["needs_attention"] == 0
     assert [e["original_filename"] for e in db.load_all_exemplars(engine.model_version) if e["identity_id"] == "member_c"] == ["Member C.png"]
     ident_rejected = client.post("/api/identify", files={"file": ("probe.png", probe_img, "image/png")}).json()
-    assert ident_rejected["faces"][0]["status"] == "unknown"
+    assert ident_rejected["faces"][0]["status"] == "Unknown"
 
     # Re-upload the 0.49 photo onto the existing roster (clear_existing=false) and choose Keep -> adds as exemplar
     resp2 = client.post(
@@ -305,7 +307,7 @@ def test_extra_photo_049_holdout_reject_and_keep_with_calibrated_t_high(tmp_path
         "Member C_2.png",
     ]
     ident_kept = client.post("/api/identify", files={"file": ("probe.png", probe_img, "image/png")}).json()
-    assert ident_kept["faces"][0]["status"] == "Confirmed"
+    assert ident_kept["faces"][0]["status"] == "High-confidence match"
     assert ident_kept["faces"][0]["display_name"] == "Member C"
 
 
@@ -380,4 +382,63 @@ def test_closeup_3000x4000_single_face_two_face_multiface_and_group_no_duplicate
     ident = client.post("/api/identify", files={"file": ("big_group.jpg", grp_bytes, "image/jpeg")}).json()
     assert ident["summary"]["total_detected"] == 1
     assert ident["faces"][0]["display_name"] == "Ananya Rao"
-    assert ident["faces"][0]["status"] == "Confirmed"
+    assert ident["faces"][0]["status"] == "High-confidence match"
+
+
+def test_flags_all_unusable_reference_categories(tmp_path):
+    """Verify PhotoProof flags unclear filenames, small faces, blurry faces, no-face, and multi-face."""
+    db = RollCallDB(db_path=tmp_path / "invalid_refs.db")
+
+    class QualityTestMockEngine(FaceEngine):
+        @property
+        def model_version(self) -> str:
+            return "qual_mock_v1"
+
+        def detect_faces(self, bgr_image: np.ndarray, score_threshold: float | None = None) -> list[DetectedFace]:
+            mean_r = float(bgr_image[:, :, 2].mean())
+            if mean_r < 70:
+                # Tiny 18x18 face -> triggers face_too_small
+                return [DetectedFace((10, 10, 18, 18), 0.95, np.zeros(15, dtype=np.float32))]
+            if mean_r > 200:
+                return []  # zero face
+            return [DetectedFace((30, 30, 120, 120), 0.95, np.zeros(15, dtype=np.float32))]
+
+        def extract_embedding(self, bgr_image: np.ndarray, face: DetectedFace) -> np.ndarray:
+            v = np.zeros(128, dtype=np.float32)
+            v[0] = 1.0
+            return v
+
+    app = create_app(db=db, engine=QualityTestMockEngine())
+    client = TestClient(app)
+
+    good_img = _make_textured_rgb_jpeg(120, 120)
+    small_img = _make_textured_rgb_jpeg(40, 120)
+    flat_blur_buf = BytesIO()
+    Image.new("RGB", (260, 260), (130, 130, 130)).save(flat_blur_buf, format="JPEG")
+    blurry_img = flat_blur_buf.getvalue()
+    noface_img = _make_textured_rgb_jpeg(230, 120)
+
+    resp = client.post(
+        "/api/enroll",
+        files=[
+            ("files", ("Priya Sharma.jpg", good_img, "image/jpeg")),
+            ("files", ("IMG_1234.jpg", good_img, "image/jpeg")),
+            ("files", ("Tiny Face.jpg", small_img, "image/jpeg")),
+            ("files", ("Blurry Person.jpg", blurry_img, "image/jpeg")),
+            ("files", ("Empty Frame.jpg", noface_img, "image/jpeg")),
+        ],
+    )
+    summary = _poll_enroll(client, resp.json()["job_id"])
+    recs = {r["filename"]: r for r in summary["file_records"]}
+
+    assert recs["Priya Sharma.jpg"]["status"] == "enrolled"
+    assert recs["IMG_1234.jpg"]["status"] == "failed"
+    assert recs["IMG_1234.jpg"]["issue_category"] == "unclear_filename"
+    assert recs["Tiny Face.jpg"]["status"] == "failed"
+    assert recs["Tiny Face.jpg"]["issue_category"] == "face_too_small"
+    assert recs["Blurry Person.jpg"]["status"] == "failed"
+    assert recs["Blurry Person.jpg"]["issue_category"] == "blurry_image"
+    assert recs["Empty Frame.jpg"]["status"] == "failed"
+    assert recs["Empty Frame.jpg"]["issue_category"] == "no_face"
+    assert summary["references_loaded"] == 1
+    assert summary["references_rejected"] == 4

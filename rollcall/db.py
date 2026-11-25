@@ -212,7 +212,8 @@ class RollCallDB:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT i.identity_id, i.display_name, COUNT(r.photo_id) AS photo_count
+                SELECT i.identity_id, i.display_name, COUNT(r.photo_id) AS photo_count,
+                       MIN(r.photo_id) AS primary_photo_id
                 FROM identities i
                 LEFT JOIN reference_photos r ON i.identity_id = r.identity_id
                 GROUP BY i.identity_id

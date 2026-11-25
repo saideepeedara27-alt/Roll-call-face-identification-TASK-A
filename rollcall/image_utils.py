@@ -41,6 +41,7 @@ class FaceQualityReport:
     detector_score: float
     passed: bool
     reasons: list[str]
+    pose_asymmetry: float = 0.0
 
 
 def validate_image_filename(filename: str) -> None:
@@ -114,8 +115,9 @@ def assess_face_quality(
     min_blur_laplacian: float,
     min_detector_score: float,
     size_scale: float = 1.0,
+    landmarks: np.ndarray | None = None,
 ) -> FaceQualityReport:
-    """Compute size (in original pixels when scaled), blur, lighting, and confidence metrics."""
+    """Compute size (in original pixels when scaled), blur, lighting, pose, and confidence metrics."""
     x, y, w, h = bbox
     img_h, img_w = bgr_image.shape[:2]
     x1 = max(0, x)
@@ -149,15 +151,30 @@ def assess_face_quality(
     if blur_laplacian < min_blur_laplacian:
         reasons.append(f"Blurry face (sharpness {blur_laplacian:.1f} < {min_blur_laplacian:.1f})")
     if detector_score < 0.35:
-        reasons.append(f"Very low detector score ({detector_score:.2f} < 0.35)")
+        reasons.append(f"Very low detector score / severe occlusion ({detector_score:.2f} < 0.35)")
     if brightness_mean < 25.0:
         reasons.append(f"Severely underexposed (brightness {brightness_mean:.0f}/255)")
     elif brightness_mean > 240.0:
         reasons.append(f"Severely overexposed (brightness {brightness_mean:.0f}/255)")
 
     passed = len(reasons) == 0
-    if detector_score < min_detector_score and detector_score >= 0.35:
-        reasons.append(f"low detector score ({detector_score:.2f} < {min_detector_score:.2f})")
+    if 0.35 <= detector_score < min_detector_score:
+        reasons.append(
+            f"Low detector confidence / possible occlusion ({detector_score:.2f} < {min_detector_score:.2f})"
+        )
+
+    pose_asymmetry = 0.0
+    if landmarks is not None and len(landmarks) >= 6:
+        rx, ry, lx, ly, nx, ny = [float(v) for v in landmarks[:6]]
+        inter_eye = float(np.hypot(lx - rx, ly - ry))
+        if inter_eye >= 4.0:
+            d_right = float(np.hypot(nx - rx, ny - ry))
+            d_left = float(np.hypot(nx - lx, ny - ly))
+            pose_asymmetry = abs(d_right - d_left) / max(d_right, d_left, 1e-6)
+            eye_min_x = min(rx, lx)
+            eye_max_x = max(rx, lx)
+            if pose_asymmetry >= 0.42 or nx < eye_min_x or nx > eye_max_x:
+                reasons.append(f"Profile angle or strong head turn (asymmetry {pose_asymmetry:.2f})")
 
     return FaceQualityReport(
         width_px=orig_w_px,
@@ -168,6 +185,7 @@ def assess_face_quality(
         detector_score=round(detector_score, 4),
         passed=passed,
         reasons=reasons,
+        pose_asymmetry=round(pose_asymmetry, 3),
     )
 
 

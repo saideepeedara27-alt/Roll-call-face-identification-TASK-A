@@ -127,9 +127,9 @@ def test_lookalike_guard_sends_ambiguous_probe_to_likely_leaving_normal_confirme
     )
 
     assert results[0].status == STATUS_LIKELY
-    assert "Lookalike guard active" in results[0].decision_reason
+    assert "lookalike candidate" in results[0].decision_reason.lower()
     assert results[1].status == STATUS_LIKELY
-    assert "Lookalike guard active" in results[1].decision_reason
+    assert "lookalike candidate" in results[1].decision_reason.lower()
     assert results[2].status == STATUS_CONFIRMED
     assert results[2].display_name == "David"
     assert results[3].status == STATUS_LIKELY
@@ -164,4 +164,4 @@ def test_lookalike_guard_applies_to_possible_duplicate_pair_over_055():
         lookalike_pairs=flagged,
     )
     assert results[0].status == STATUS_LIKELY
-    assert "Lookalike guard active" in results[0].decision_reason
+    assert "lookalike candidate" in results[0].decision_reason.lower()

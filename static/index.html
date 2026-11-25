@@ -1,359 +1,286 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RollCall — Offline Face Identification &amp; Attendance</title>
+  <title>PhotoProof — Who Is in the Photo?</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <header class="topbar" role="banner">
-    <div class="topbar-left">
-      <div class="brand" aria-label="RollCall Home">
-        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path d="M4 8V6a2 2 0 0 1 2-2h2" />
-          <path d="M16 4h2a2 2 0 0 1 2 2v2" />
-          <path d="M4 16v2a2 2 0 0 0 2 2h2" />
-          <path d="M16 20h2a2 2 0 0 0 2-2v-2" />
-          <circle cx="12" cy="10" r="3" />
-          <path d="M7.5 17.5c1-2.2 2.7-3.2 4.5-3.2s3.5 1 4.5 3.2" />
-        </svg>
-        <div>
-          <span class="brand-name">RollCall</span>
-          <span class="brand-sub">Attendance Intelligence</span>
-        </div>
-      </div>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
 
-      <span class="offline-pill" title="Runs locally on 127.0.0.1 with zero external APIs, cloud calls, or CDNs.">
-        <span class="offline-dot" aria-hidden="true"></span>
-        Offline &bull; Local 127.0.0.1
-      </span>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <div class="brand-mark" aria-hidden="true">PP</div>
+      <div>
+        <h1 class="brand-title">PhotoProof</h1>
+        <p class="brand-subtitle">Who is in the photo? Conservative, human-reviewed group photo naming</p>
+      </div>
     </div>
 
-    <div class="topbar-actions">
-      <button type="button" id="btn-open-enroll" class="btn btn-secondary">
-        <span id="enrolled-pill-text">0 Enrolled</span>
-        <span id="warning-dot" class="warn-badge hidden" title="Enrollment warnings">!</span>
-      </button>
-
-      <label class="btn btn-primary file-trigger" tabindex="0" role="button" for="group-file-input">
-        Upload Group Photo
-      </label>
-      <input id="group-file-input" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp" class="sr-only" />
-
-      <button type="button" id="btn-demo" class="btn btn-ghost" title="Run the real pipeline on bundled practice data">
-        Demo Mode
-      </button>
-
-      <button type="button" id="btn-about-run" class="btn btn-ghost" title="Inspect folder-calibrated thresholds and limitations">
-        About this run
-      </button>
-
-      <button type="button" id="btn-theme" class="btn btn-icon" aria-label="Toggle light or dark theme" title="Toggle theme">
-        <span id="theme-icon" aria-hidden="true">&#9790;</span>
-      </button>
-
-      <button type="button" id="btn-wipe" class="btn btn-danger-outline" title="Permanently delete all local identities, embeddings, and session data">
-        Wipe All Data
-      </button>
+    <div class="topbar-status" aria-live="polite">
+      <span id="status-badge" class="status-pill status-neutral">Checking local engine…</span>
+      <span id="calibration-badge" class="meta-chip hidden"></span>
+      <button type="button" id="btn-undo" class="btn btn-quiet hidden" title="Undo last edit">Undo edit</button>
+      <button type="button" id="btn-clear-session" class="btn btn-outline-danger">Clear session</button>
     </div>
   </header>
 
-  <div id="model-alert" class="alert-banner hidden" role="alert"></div>
-  <div id="pending-attention-banner" class="warn-banner hidden" role="status">
-    <span id="pending-attention-text"></span>
-    <div class="warn-banner-actions">
-      <button type="button" id="btn-banner-pick-faces" class="btn btn-sm btn-secondary">Pick Faces</button>
-      <button type="button" id="btn-banner-continue" class="btn btn-sm btn-ghost">Continue without them</button>
-    </div>
-  </div>
-  <div id="demo-note-banner" class="info-banner hidden" role="status"></div>
-  <div id="toast-area" class="toast-area" aria-live="polite"></div>
+  <main id="main-content" class="page-shell">
+    <div id="toast-banner" class="toast-banner hidden" role="status" aria-live="polite"></div>
 
-  <main class="workbench" role="main">
-    <!-- Left / Center Stage: Interactive Annotated Group Photo Canvas -->
-    <section class="canvas-pane" aria-label="Group photograph viewer">
-      <div class="canvas-toolbar">
-        <div class="toolbar-info">
-          <span id="photo-title" class="photo-title">No group photo loaded</span>
-          <span id="photo-meta" class="photo-meta"></span>
-        </div>
-        <div class="toolbar-controls">
-          <button type="button" id="btn-second-look" class="btn btn-sm btn-secondary" title="Re-scan overlapping tiles for missed small faces" disabled>Second Look</button>
-          <button type="button" id="btn-draw-box" class="btn btn-sm btn-ghost" title="Draw a box around a missed face" disabled>Draw Box</button>
-          <span class="divider" aria-hidden="true"></span>
-          <button type="button" id="btn-zoom-out" class="btn btn-sm btn-ghost" aria-label="Zoom out" disabled>&minus;</button>
-          <span id="zoom-level" class="zoom-label">100%</span>
-          <button type="button" id="btn-zoom-in" class="btn btn-sm btn-ghost" aria-label="Zoom in" disabled>+</button>
-          <button type="button" id="btn-zoom-reset" class="btn btn-sm btn-ghost" disabled>Fit</button>
-          <button type="button" id="btn-toggle-map" class="btn btn-sm btn-ghost" title="Toggle mini coverage map" disabled>Map</button>
-          <span class="divider" aria-hidden="true"></span>
-          <button type="button" id="btn-export-png" class="btn btn-sm btn-secondary" disabled>Export PNG</button>
-          <button type="button" id="btn-export-csv" class="btn btn-sm btn-secondary" disabled>Export CSV</button>
-          <button type="button" id="btn-print-sheet" class="btn btn-sm btn-secondary" disabled>Print Sheet</button>
-        </div>
+    <!-- Demo Readiness Strip (always accurate to current session) -->
+    <section id="demo-readiness" class="readiness-panel" aria-label="Demo readiness summary">
+      <div class="readiness-header">
+        <span class="readiness-eyebrow">Demo readiness</span>
+        <span id="manual-summary-note" class="readiness-note">All computation runs locally on this laptop</span>
       </div>
-
-      <div id="canvas-stage" class="canvas-stage" tabindex="0" aria-label="Interactive group photo canvas. Use arrow keys to cycle detected faces.">
-        <div id="empty-dropzone" class="empty-dropzone">
-          <div class="empty-card">
-            <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-              <rect x="6" y="10" width="36" height="28" rx="4" />
-              <circle cx="17" cy="20" r="3" />
-              <path d="M8 34l9-8 7 6 6-5 10 7" />
-            </svg>
-            <h2>Identify Everyone in Your Group Photo</h2>
-            <p>100% local on your Mac. Select an enrolled folder (~50 people), then drop or upload a group photograph.</p>
-            <div class="empty-cta-row">
-              <button type="button" id="btn-empty-enroll" class="btn btn-secondary">1. Select Reference Folder</button>
-              <label for="group-file-input" class="btn btn-primary file-trigger" tabindex="0">2. Upload Group Photo</label>
-              <button type="button" id="btn-empty-demo" class="btn btn-ghost">Try Demo Mode</button>
-            </div>
-          </div>
+      <div class="readiness-grid">
+        <div class="readiness-tile">
+          <span class="tile-label">References loaded</span>
+          <strong id="metric-ref-loaded" class="tile-value">0</strong>
         </div>
-
-        <canvas id="photo-canvas" class="photo-canvas hidden"></canvas>
-
-        <div id="coverage-map-card" class="coverage-map-card hidden">
-          <canvas id="coverage-map-canvas" class="coverage-map-canvas" width="176" height="104" aria-label="Mini coverage map showing viewport and detected face markers"></canvas>
-          <div class="coverage-caption">Shows viewport and detected faces; does not prove every face was found</div>
+        <div class="readiness-tile">
+          <span class="tile-label">References rejected</span>
+          <strong id="metric-ref-rejected" class="tile-value">0</strong>
         </div>
-
-        <div id="loading-overlay" class="loading-overlay hidden" aria-live="polite">
-          <div class="spinner" aria-hidden="true"></div>
-          <p id="loading-text">Running local YuNet + SFace analysis...</p>
+        <div class="readiness-tile">
+          <span class="tile-label">Faces detected</span>
+          <strong id="metric-faces-detected" class="tile-value">0</strong>
         </div>
-      </div>
-
-      <div class="legend-bar" aria-label="Face status legend">
-        <span class="legend-item"><span class="legend-swatch swatch-confirmed"></span>&#10003; Confirmed</span>
-        <span class="legend-item"><span class="legend-swatch swatch-reviewer"></span>&#10003;R Reviewer</span>
-        <span class="legend-item"><span class="legend-swatch swatch-likely"></span>? Likely (Needs Review)</span>
-        <span class="legend-item"><span class="legend-swatch swatch-unknown"></span>! unknown</span>
-        <span class="legend-hint">Keys: J/K next/prev &bull; R review queue &bull; C confirm &bull; A assign &bull; U unknown &bull; Z undo</span>
+        <div class="readiness-tile tile-confirmed">
+          <span class="tile-label">High-confidence matches</span>
+          <strong id="metric-high-conf" class="tile-value">0</strong>
+        </div>
+        <div class="readiness-tile tile-review">
+          <span class="tile-label">Needs-review faces</span>
+          <strong id="metric-needs-review" class="tile-value">0</strong>
+        </div>
+        <div class="readiness-tile tile-unknown">
+          <span class="tile-label">Unknown faces</span>
+          <strong id="metric-unknown" class="tile-value">0</strong>
+        </div>
       </div>
     </section>
 
-    <!-- Right Panel: Synchronized Face Results, Attendance & Explainability Inspector -->
-    <aside class="inspector-pane" aria-label="Results and explainability inspector">
-      <div class="summary-grid summary-grid-6" id="summary-grid">
-        <div class="stat-card">
-          <span class="stat-label">Detected</span>
-          <strong class="stat-value" id="stat-detected">0</strong>
+    <!-- Start Screen & Primary Actions -->
+    <section id="start-screen" class="start-hero" aria-label="Get started">
+      <div class="privacy-notice" role="note">
+        <strong>100% on-device privacy:</strong> Your portraits and group photos stay on this computer. No internet connection, cloud uploads, background services, or telemetry are ever used. Edits stay only in the current browser/server session until you choose to export.
+      </div>
+
+      <div class="primary-actions-grid">
+        <div class="action-card" id="card-load-references">
+          <div class="action-step">Step 1</div>
+          <h2>Load reference folder</h2>
+          <p>Select a folder of named headshots (for example, <code>Priya Sharma.jpg</code>). PhotoProof checks image sharpness, face size, multiple faces, duplicate names, and unclear filenames before loading.</p>
+          <div class="action-buttons">
+            <label for="ref-folder-input" class="btn btn-primary btn-large">Load reference folder</label>
+            <input id="ref-folder-input" type="file" webkitdirectory directory multiple accept="image/*" class="sr-only" />
+            <button type="button" id="btn-toggle-path-enroll" class="btn btn-quiet">Or enter folder path</button>
+          </div>
+          <div id="path-enroll-box" class="path-enroll-box hidden">
+            <label for="ref-path-input" class="sr-only">Local reference folder path</label>
+            <input id="ref-path-input" type="text" class="text-input" placeholder="/Users/you/Photos/Team" />
+            <button type="button" id="btn-path-enroll" class="btn btn-secondary">Load folder</button>
+          </div>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="chk-replace-refs" checked />
+            <span>Replace previously loaded references</span>
+          </label>
         </div>
-        <div class="stat-card stat-confirmed">
-          <span class="stat-label">Auto OK</span>
-          <strong class="stat-value" id="stat-confirmed">0</strong>
-        </div>
-        <div class="stat-card stat-reviewer">
-          <span class="stat-label">Reviewed</span>
-          <strong class="stat-value" id="stat-reviewer">0</strong>
-        </div>
-        <div class="stat-card stat-likely">
-          <span class="stat-label">Review</span>
-          <strong class="stat-value" id="stat-likely">0</strong>
-        </div>
-        <div class="stat-card stat-unknown">
-          <span class="stat-label">unknown</span>
-          <strong class="stat-value" id="stat-unknown">0</strong>
-        </div>
-        <div class="stat-card">
-          <span class="stat-label">Absent</span>
-          <strong class="stat-value" id="stat-absent">0</strong>
+
+        <div class="action-card" id="card-analyse-group">
+          <div class="action-step">Step 2</div>
+          <h2>Analyse group photo</h2>
+          <p>Upload one group photograph or drop it here. PhotoProof labels each detected person stably (<code>Face 1</code>, <code>Face 2</code>, …), shows evidence and runner-up candidates, and highlights anything needing your review.</p>
+          <div class="action-buttons">
+            <label for="group-file-input" class="btn btn-primary btn-large">Analyse group photo</label>
+            <input id="group-file-input" type="file" accept="image/*" class="sr-only" />
+          </div>
+          <div id="group-dropzone" class="dropzone" tabindex="0" role="button" aria-label="Drop a group photo here or click to choose a file">
+            Drop a group photo here (JPEG or PNG)
+          </div>
         </div>
       </div>
 
-      <div class="filter-bar" role="tablist" aria-label="Filter face results">
-        <button type="button" class="filter-chip active" data-filter="all" role="tab" aria-selected="true">All</button>
-        <button type="button" class="filter-chip" data-filter="Confirmed" role="tab" aria-selected="false">Confirmed</button>
-        <button type="button" class="filter-chip" data-filter="Confirmed by reviewer" role="tab" aria-selected="false">Reviewed</button>
-        <button type="button" class="filter-chip" data-filter="Likely" role="tab" aria-selected="false">Likely</button>
-        <button type="button" class="filter-chip" data-filter="unknown" role="tab" aria-selected="false">unknown</button>
-        <button type="button" class="filter-chip" data-filter="absent" role="tab" aria-selected="false">Absent</button>
+      <div class="demo-bar">
+        <span>Want to inspect the workflow immediately with bundled offline practice photos?</span>
+        <button type="button" id="btn-demo" class="btn btn-secondary">Try offline sample photo</button>
       </div>
+    </section>
 
-      <div id="queue-bar" class="queue-bar hidden" aria-label="Keyboard Review Queue">
-        <div class="queue-left">
-          <button type="button" id="btn-toggle-queue" class="btn btn-sm btn-secondary">Review Queue (0)</button>
-          <span id="queue-progress" class="queue-progress"></span>
+    <!-- Enrollment / Health Progress -->
+    <section id="enroll-progress-card" class="card hidden" aria-live="polite">
+      <div class="progress-row">
+        <span id="enroll-progress-label">Checking reference folder…</span>
+        <span id="enroll-progress-count">0 / 0</span>
+      </div>
+      <div class="progress-track">
+        <div id="enroll-progress-fill" class="progress-fill"></div>
+      </div>
+    </section>
+
+    <!-- Reference Folder Health Check & Visual Contact Sheet -->
+    <section id="reference-section" class="card hidden" aria-label="Reference folder health check and contact sheet">
+      <div class="section-header">
+        <div>
+          <h2>Reference Folder Health Check</h2>
+          <p id="health-headline" class="muted-text">No reference folder loaded yet.</p>
         </div>
-        <div class="queue-actions">
-          <button type="button" id="btn-queue-prev" class="btn btn-sm btn-ghost" title="Previous (K)">Prev</button>
-          <button type="button" id="btn-queue-skip" class="btn btn-sm btn-ghost" title="Skip (S)">Skip</button>
-          <button type="button" id="btn-queue-next" class="btn btn-sm btn-ghost" title="Next (J)">Next</button>
-          <button type="button" id="btn-undo" class="btn btn-sm btn-ghost" title="Undo last correction (Z)" disabled>Undo</button>
+        <div class="health-tabs" role="tablist" aria-label="Filter reference records">
+          <button type="button" class="tab-btn active" data-ref-tab="all">Contact Sheet</button>
+          <button type="button" class="tab-btn" data-ref-tab="attention">Pending / Flagged (<span id="count-attention-tab">0</span>)</button>
+          <button type="button" class="tab-btn" data-ref-tab="rejected">Rejected (<span id="count-rejected-tab">0</span>)</button>
         </div>
       </div>
 
-      <div id="results-list" class="results-list" role="list">
-        <div class="empty-list-msg">Upload a group photo to see detected faces and attendance status.</div>
-      </div>
+      <!-- Pending Multi-Face & Duplicate Name Comparisons -->
+      <div id="pending-reviews-area" class="pending-area hidden"></div>
 
-      <section id="explain-panel" class="explain-panel hidden" aria-label="Selected face explainability inspector">
-        <div class="explain-header">
+      <!-- Flagged Rejected Reference Items -->
+      <div id="rejected-refs-area" class="rejected-area hidden"></div>
+
+      <!-- Visual Contact Sheet of Enrolled People -->
+      <div id="contact-sheet-area">
+        <div id="contact-sheet-grid" class="contact-sheet-grid" aria-label="Loaded reference contact sheet"></div>
+      </div>
+    </section>
+
+    <!-- Group Photo Analysis & Evidence Workspace -->
+    <section id="workspace-section" class="workspace-grid hidden" aria-label="Group photo review workspace">
+      <div class="canvas-column card">
+        <div class="section-header">
           <div>
-            <span id="explain-face-num" class="explain-kicker">Face #1</span>
-            <h3 id="explain-title">Priya Sharma</h3>
+            <h2 id="group-photo-title">Group Photo</h2>
+            <p id="group-meta-line" class="muted-text"></p>
           </div>
-          <span id="explain-badge" class="status-badge">Confirmed</span>
-        </div>
-
-        <div class="comparison-row">
-          <div class="crop-box">
-            <img id="explain-group-crop" alt="Detected face from group photo" />
-            <span>Detected Face</span>
-          </div>
-          <div class="crop-vs" aria-hidden="true">vs</div>
-          <div class="crop-box">
-            <img id="explain-ref-crop" alt="Matched reference portrait" />
-            <div id="explain-ref-placeholder" class="ref-placeholder hidden">No Match</div>
-            <span id="explain-ref-label">Reference Photo</span>
+          <div class="canvas-actions">
+            <button type="button" id="btn-toggle-labels" class="btn btn-quiet">Hide labels</button>
+            <button type="button" id="btn-second-look" class="btn btn-quiet" title="Scan 2x2 overlapping tiles for small background faces">Scan small faces</button>
+            <button type="button" id="btn-manual-box" class="btn btn-quiet" title="Draw a box manually if a face was missed">Draw missed face</button>
           </div>
         </div>
 
-        <div class="metrics-grid">
-          <div class="metric-item">
-            <span class="metric-label">Cosine Similarity</span>
-            <strong id="explain-sim">&mdash;</strong>
-          </div>
-          <div class="metric-item">
-            <span class="metric-label">Runner-Up Margin (&Delta;)</span>
-            <strong id="explain-margin">&mdash;</strong>
-          </div>
-          <div class="metric-item">
-            <span class="metric-label">Face Resolution</span>
-            <strong id="explain-size">&mdash;</strong>
-          </div>
-          <div class="metric-item">
-            <span class="metric-label">Sharpness / Score</span>
-            <strong id="explain-quality">&mdash;</strong>
-          </div>
+        <div id="canvas-stage" class="canvas-stage">
+          <canvas id="group-canvas" aria-label="Annotated group photograph"></canvas>
         </div>
 
-        <p id="explain-original" class="explain-original hidden"></p>
-        <p id="explain-runnerup" class="explain-detail"></p>
-        <p id="explain-reason" class="explain-reason"></p>
-
-        <div class="correction-box">
-          <div class="correction-title">Reviewer Actions (Session Only &mdash; Never Alters Embeddings)</div>
-          <div class="correction-row">
-            <input id="correction-reason" type="text" placeholder="Optional reason note..." aria-label="Optional reviewer reason note" />
-          </div>
-          <div class="correction-actions">
-            <button type="button" id="btn-confirm-match" class="btn btn-sm btn-confirmed hidden" title="Shortcut: C">Confirm (C)</button>
-            <button type="button" id="btn-mark-unknown" class="btn btn-sm btn-ghost" title="Shortcut: U">Mark unknown (U)</button>
-            <button type="button" id="btn-remove-manual-box" class="btn btn-sm btn-danger-outline hidden">Remove Manual Box</button>
-          </div>
-
-          <div class="assign-search-wrap">
-            <input id="assign-search-input" type="text" placeholder="Assign (A): type name to filter..." aria-label="Search enrolled person to assign" autocomplete="off" />
-            <div id="assign-results-list" class="assign-results hidden" role="listbox"></div>
+        <div class="export-bar">
+          <span class="muted-text">Export current session (only when you choose):</span>
+          <div class="export-buttons">
+            <button type="button" id="btn-export-png" class="btn btn-secondary">Export annotated PNG</button>
+            <button type="button" id="btn-export-csv" class="btn btn-secondary">Export CSV</button>
+            <button type="button" id="btn-export-print" class="btn btn-quiet">Summary sheet</button>
           </div>
         </div>
+      </div>
 
-        <details class="trail-details" id="trail-details">
-          <summary>Append-Only Decision Trail (<span id="trail-count">0</span>)</summary>
-          <div id="trail-list" class="trail-list"></div>
-        </details>
-      </section>
-    </aside>
+      <div class="review-column">
+        <!-- Signature Innovation: Evidence Card -->
+        <section id="evidence-card" class="card evidence-card" aria-label="Selected face Evidence Card">
+          <div id="evidence-empty" class="evidence-empty">
+            <h3>Evidence Card</h3>
+            <p>Click any face in the group photo or pick a row below to inspect its similarity evidence, runner-up margin, quality checks, and override controls.</p>
+          </div>
+
+          <div id="evidence-body" class="hidden">
+            <div class="evidence-header">
+              <div>
+                <div class="evidence-title-row">
+                  <h3 id="ev-face-label">Face 1</h3>
+                  <span id="ev-status-badge" class="status-pill">Unknown</span>
+                  <span id="ev-source-badge" class="source-pill">Model suggestion</span>
+                </div>
+                <p id="ev-proposed-name" class="evidence-person">Unknown</p>
+              </div>
+            </div>
+
+            <div class="evidence-portraits">
+              <div class="portrait-box">
+                <span class="portrait-caption">Group crop</span>
+                <img id="ev-group-crop" src="" alt="Cropped group face" />
+              </div>
+              <div class="portrait-box">
+                <span class="portrait-caption">Proposed reference</span>
+                <img id="ev-ref-crop" src="" alt="Proposed reference portrait" class="hidden" />
+                <div id="ev-no-ref-box" class="portrait-placeholder">No match proposed</div>
+                <span id="ev-ref-name-sub" class="portrait-sublabel"></span>
+              </div>
+              <div class="portrait-box" id="ev-runnerup-box">
+                <span class="portrait-caption">Second-best candidate</span>
+                <div class="runnerup-card-inner">
+                  <strong id="ev-runnerup-name">—</strong>
+                  <span id="ev-runnerup-score" class="muted-text"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="evidence-metrics">
+              <div class="metric-item">
+                <span class="metric-label">Cosine similarity</span>
+                <strong id="ev-similarity">—</strong>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Runner-up margin</span>
+                <strong id="ev-margin">—</strong>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Face size / sharpness</span>
+                <strong id="ev-size-blur">—</strong>
+              </div>
+            </div>
+            <p class="score-disclaimer">Similarity scores measure visual closeness between face embeddings (range -1 to +1), not a probability or percentage accuracy.</p>
+
+            <div id="ev-warnings" class="quality-warnings" aria-label="Image quality checks"></div>
+
+            <div class="explanation-box">
+              <span class="explanation-label">Decision explanation</span>
+              <p id="ev-reason-text"></p>
+            </div>
+
+            <div class="evidence-controls">
+              <div class="quick-actions">
+                <button type="button" id="btn-ev-confirm" class="btn btn-primary">Confirm</button>
+                <button type="button" id="btn-ev-unknown" class="btn btn-quiet">Mark Unknown</button>
+                <button type="button" id="btn-ev-use-runnerup" class="btn btn-secondary hidden">Choose runner-up</button>
+              </div>
+
+              <div class="reassign-row">
+                <label for="ev-person-select" class="sr-only">Choose another person from reference folder</label>
+                <select id="ev-person-select" class="text-input"></select>
+                <button type="button" id="btn-ev-assign" class="btn btn-secondary">Choose another person</button>
+              </div>
+
+              <div class="note-row">
+                <label for="ev-note-input" class="sr-only">Optional reason note</label>
+                <input id="ev-note-input" type="text" class="text-input" placeholder="Optional note for this decision…" />
+              </div>
+
+              <div id="ev-remove-box" class="hidden">
+                <button type="button" id="btn-ev-remove-manual" class="btn btn-outline-danger">Remove manually drawn box</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Accessible Results List -->
+        <section class="card results-card" aria-label="Detected faces results list">
+          <div class="section-header">
+            <h3>Results List</h3>
+            <div class="filter-pills" role="group" aria-label="Filter results by status">
+              <button type="button" class="filter-pill active" data-status-filter="all">All</button>
+              <button type="button" class="filter-pill" data-status-filter="Needs review">Needs review</button>
+              <button type="button" class="filter-pill" data-status-filter="High-confidence match">High confidence</button>
+              <button type="button" class="filter-pill" data-status-filter="Unknown">Unknown</button>
+            </div>
+          </div>
+          <ul id="results-list" class="results-list" role="listbox" aria-label="Detected faces"></ul>
+        </section>
+      </div>
+    </section>
   </main>
 
-  <!-- Enrollment Drawer / Modal -->
-  <div id="enroll-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="enroll-modal-title">
-    <div class="modal-backdrop" data-close="enroll-modal"></div>
-    <div class="modal-card modal-lg">
-      <div class="modal-header">
-        <div>
-          <h2 id="enroll-modal-title">Reference Folder Enrollment</h2>
-          <p class="modal-subtitle">Select a folder containing individual photos named by person (e.g. <code>Priya Sharma.jpg</code>). Multiple photos per person are grouped automatically.</p>
-        </div>
-        <button type="button" class="btn btn-icon" data-close="enroll-modal" aria-label="Close enrollment dialog">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <div class="enroll-controls">
-          <label for="folder-input" class="btn btn-primary file-trigger" tabindex="0">
-            Choose Reference Folder
-          </label>
-          <input id="folder-input" type="file" webkitdirectory directory multiple accept=".jpg,.jpeg,.png,.bmp,.webp" class="sr-only" />
-
-          <label class="checkbox-label">
-            <input type="checkbox" id="chk-clear-existing" checked />
-            Replace existing roster
-          </label>
-          <label class="checkbox-label" title="Ephemeral by default: embeddings stay in memory/session only unless you opt in to SQLite hash caching across runs.">
-            <input type="checkbox" id="chk-persist-cache" />
-            Save embedding cache across runs (opt-in)
-          </label>
-        </div>
-
-        <div class="enroll-path-fallback">
-          <input id="folder-path-input" type="text" placeholder="Fallback: paste local folder path (e.g. /Users/.../team_photos)" aria-label="Paste local reference folder path" />
-          <button type="button" id="btn-enroll-path" class="btn btn-secondary">Load Folder Path</button>
-        </div>
-
-        <div id="enroll-progress-wrap" class="progress-wrap hidden">
-          <div class="progress-top">
-            <span id="enroll-progress-label">Processing...</span>
-            <span id="enroll-progress-pct">0%</span>
-          </div>
-          <progress id="enroll-progress-bar" class="progress-bar" max="100" value="0"></progress>
-        </div>
-
-        <div id="enroll-summary" class="enroll-summary hidden"></div>
-        <div id="multiface-section" class="multiface-section hidden"></div>
-        <div id="extra-review-section" class="multiface-section hidden"></div>
-
-        <div class="roster-preview">
-          <h3>Enrolled Roster (<span id="roster-count">0</span>)</h3>
-          <div id="roster-chips" class="roster-chips"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- About This Run Drawer / Modal -->
-  <div id="about-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="about-modal-title">
-    <div class="modal-backdrop" data-close="about-modal"></div>
-    <div class="modal-card modal-lg">
-      <div class="modal-header">
-        <div>
-          <h2 id="about-modal-title">About This Run — Calibration &amp; Limits</h2>
-          <p class="modal-subtitle">Folder-level different-person similarity calibration (floored at published SFace 0.363, capped at 0.50).</p>
-        </div>
-        <button type="button" class="btn btn-icon" data-close="about-modal" aria-label="Close calibration drawer">&times;</button>
-      </div>
-      <div class="modal-body" id="about-run-body">
-        <p class="photo-meta">Enroll a reference folder to view folder-calibrated thresholds.</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- Wipe All Data Confirmation Modal -->
-  <div id="wipe-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="wipe-modal-title">
-    <div class="modal-backdrop" data-close="wipe-modal"></div>
-    <div class="modal-card modal-sm">
-      <div class="modal-header">
-        <h2 id="wipe-modal-title">Wipe All Local Data?</h2>
-        <button type="button" class="btn btn-icon" data-close="wipe-modal" aria-label="Close dialog">&times;</button>
-      </div>
-      <div class="modal-body">
-        <p class="wipe-warning">This will permanently delete from local storage:</p>
-        <ul class="wipe-list">
-          <li>All enrolled identity records and reference face crops</li>
-          <li>All cached 128-d face embeddings in SQLite</li>
-          <li>All session corrections and active group-photo results</li>
-        </ul>
-        <p class="wipe-note">Bundled model weights and your original image files on disk are never deleted.</p>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-ghost" data-close="wipe-modal">Cancel</button>
-        <button type="button" id="btn-confirm-wipe" class="btn btn-danger">Permanently Wipe Data</button>
-      </div>
-    </div>
-  </div>
-
-  <script type="module" src="/static/app.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
