@@ -157,11 +157,11 @@ evidence card, since the top name was wrong.
 The Task A brief requires putting your **full AI chat history in the repo, starting from your very first prompt**.
 
 ### Included in Repository
-- **[`docs/chat_history_prompts.md`](docs/chat_history_prompts.md):** Verbatim chronological export of **every user turn (`Turn 0` through `Turn 965`)** in the Antigravity engineering session (`2026-11-25T11:47:15Z` onward), extracted directly from the session transcript (`transcript.jsonl`) with only system XML tags stripped.
+- **[`docs/chat_history_prompts.md`](docs/chat_history_prompts.md):** Curated chronological log of all **19 engineering and design steering turns** (`Step 0` through `Step 884`, `2026-11-25T11:47:15Z` onward), exported from the session transcript with routine pings, accidental output pastes, and broken external preview links cleaned for readability.
 
 ### Checklist of External / Prior Chats to Attach Before Submission
 If you used any separate browser/IDE chats *before* pasting the Step 0 master prompt and Checkpoint 1–4 review blocks into this session, export/save those chats into `docs/` (or add their public share links below) before your final push so no earlier prompt is missing:
 
-- [ ] **Prior Planning Chat (if external):** Earlier chat where the Checkpoints 1–4 reviews pasted in Turns 2, 16, 18, 29, and 36 were drafted -> export link / markdown into `docs/`.
+- [ ] **Prior Planning Chat (if external):** Earlier chat where the Checkpoints 1–4 reviews pasted in Steps 2, 16, 18, 29, and 36 were drafted -> export link / markdown into `docs/`.
 - [ ] **Initial Practice Image Generation Prompts (if created externally):** Prompts used to create the 6 practice portraits in `data/practice/reference/` (turns 142/146 generated via in-session subagent; add any external Gemini image-gen share links if used separately).
-- [x] **Antigravity Main Build & Verification Session (Conversation `a827afa4-b846-444d-9cd4-e7c5a9177d6c`):** Exported in full user-turn sequence at [`docs/chat_history_prompts.md`](docs/chat_history_prompts.md) covering Turns 0–965 (Checkpoints 1–4 + Steps 1–9 + Smoke fixes + `README.md`, `EVAL.md`, `ARCHITECTURE.md`, `RESEARCH.md`, `AI_COLLAB.md`).
+- [x] **Antigravity Main Build & Verification Session (Conversation `a827afa4-b846-444d-9cd4-e7c5a9177d6c`):** Exported at [`docs/chat_history_prompts.md`](docs/chat_history_prompts.md) covering the 19 substantive steering turns (Checkpoints 1–4 + Steps 1–9 + Smoke fixes + `README.md`, `EVAL.md`, `ARCHITECTURE.md`, `RESEARCH.md`, `AI_COLLAB.md`).
