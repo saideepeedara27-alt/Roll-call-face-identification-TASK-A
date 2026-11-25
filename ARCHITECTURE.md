@@ -1,19 +1,19 @@
-# RollCall System Architecture (`ARCHITECTURE.md`)
+# PhotoProof System Architecture (`ARCHITECTURE.md`)
 
 **Take-Home Task A: Who Is in the Photo?**
 
-RollCall runs strictly on `127.0.0.1` as a self-contained local web workbench for folder enrollment, open-set group photo identification, human-in-the-loop attendance review, and print/CSV/PNG reporting with zero network calls at runtime.
+PhotoProof runs strictly on `127.0.0.1` as a self-contained local web workbench for folder enrollment, open-set group photo identification, human-in-the-loop evidence review (Evidence Cards), and CSV/PNG reporting with zero network calls at runtime.
 
 ---
 
 ## 1. Architecture Diagram (Generated with Archify)
 
-The architecture diagram below was authored directly from committed repository evidence (`HEAD` `39e3cf83986bc2351d05eec437ebd296ad911cb7`) and validated through **Archify v3.3.1** (`validate`, `deliver`, `check`, and `browser-check` gates passing with 14 repository source citations):
+The architecture diagram below was authored directly from committed repository evidence (`HEAD` `afd820095b45c31ef78c44add943b09de20c059a`) and validated through **Archify v3.3.1** (`validate`, `deliver`, `check`, and `browser-check` gates passing with 14 repository source citations):
 
-![RollCall System Architecture](docs/rollcall-architecture.svg)
+![PhotoProof System Architecture](docs/photoproof-architecture.svg)
 
-- **Static SVG export:** [`docs/rollcall-architecture.svg`](docs/rollcall-architecture.svg)
-- **Interactive Archify HTML diagram** (3 guided views: *Full System*, *Enrollment & Health*, *Identify & Review*): [`docs/rollcall-architecture.html`](docs/rollcall-architecture.html)
+- **Static SVG export:** [`docs/photoproof-architecture.svg`](docs/photoproof-architecture.svg)
+- **Interactive Archify HTML diagram** (3 guided views: *Full System*, *Enrollment & Health*, *Identify & Review*): [`docs/photoproof-architecture.html`](docs/photoproof-architecture.html)
 
 ---
 
@@ -27,7 +27,7 @@ The architecture diagram below was authored directly from committed repository e
 | **Ingest & Health Studio** | [`rollcall/image_utils.py`](rollcall/image_utils.py), [`rollcall/filename_parser.py`](rollcall/filename_parser.py), [`rollcall/enrollment.py`](rollcall/enrollment.py) | `ImageOps.exif_transpose` orientation correction, `1200 px` reference pre-scale / `2400 px` group cap, original-pixel quality gate, system-file filtering (`.DS_Store`, `Thumbs.db`, `__MACOSX`), multi-face holdout, and `T_high` extra-photo consistency guard. |
 | **CV Detection & Second Look** | [`rollcall/engine/base.py`](rollcall/engine/base.py), [`rollcall/engine/opencv_engine.py`](rollcall/engine/opencv_engine.py), [`rollcall/second_look.py`](rollcall/second_look.py) | Abstract `FaceEngine` + `OpenCVYuNetSFaceEngine` (`FaceDetectorYN` + `FaceRecognizerSF`), `suppress_artifact_detections` (`IoU > 0.25`, `containment > 0.40`, `< 0.65` reference secondary drop), overlapping tiled Second Look (`2×2` / `3×2` at 20% overlap), and manual-box detection (`0.35` floor capped at `Likely`). |
 | **Calibration & Matching** | [`rollcall/calibration.py`](rollcall/calibration.py), [`rollcall/matcher.py`](rollcall/matcher.py) | Computes folder-level `99.5th` percentile across distinct identity pairs -> `T_low` clamped to `[0.363, 0.50]` (`N < 15` fallback) and `T_high = max(T_low + 0.06, 0.44)`, classifies Lookalike (`>= 0.42`) vs Possible Duplicate (`>= 0.55`) pairs, enforces `0.05` / `0.10` runner-up margins, and supports optional Hungarian uniqueness without overriding weak/`Likely` states. |
-| **Persistence & Audit** | [`rollcall/db.py`](rollcall/db.py) | Local SQLite (`runtime_data/rollcall.db`) holding active identities, crops, **opt-in** SHA-256 embedding cache (`persist_cache=False` by default), and append-only `decision_trail`; wiped completely by `POST /api/wipe`. |
+| **Persistence & Audit** | [`rollcall/db.py`](rollcall/db.py) | Local SQLite (`runtime_data/photoproof.db`) holding active identities, crops, **opt-in** SHA-256 embedding cache (`persist_cache=False` by default), and append-only `decision_trail`; wiped completely by `POST /api/wipe`. |
 | **Exports & Eval** | [`rollcall/exporter.py`](rollcall/exporter.py), [`scripts/evaluate.py`](scripts/evaluate.py), [`scripts/build_practice_group.py`](scripts/build_practice_group.py) | Generates annotated PNGs, CSV exports, and XSS-escaped HTML print sheets (`DEMO DATA` banner, Page 1 summary, Page 2+ Decision Trail appendix), plus CLI evaluation and practice data generation scripts. |
 
 ---
@@ -44,7 +44,7 @@ Every architectural trade-off below reflects an explicit design choice you direc
 2. **Open-Set Three-Tier Decisions (`Confirmed` / `Likely` / `unknown`) + Optional Gated Hungarian vs. Forced Top-1 Matching**
    - **What we chose:** Prefer `"unknown"` or `"Likely"` (human review, **not** counted Present) over forced Top-1 matches. Independent per-face matching is default; even when Hungarian 1-to-1 assignment runs, it can never upgrade weak/`Likely` faces or bypass dummy `"unknown"` nodes.
    - **What we gave up:** Higher automated `"Present"` coverage on borderline or close-similarity faces (e.g., lookalike pairs separated by `< 0.10` margin).
-   - **Why (Author's Decision):** Core principle: *"RollCall should prefer an honest unknown result over a confidently incorrect identity."*
+   - **Why (Author's Decision):** Core principle: *"PhotoProof should prefer an honest unknown result over a confidently incorrect identity."*
 
 3. **Folder-Level `99.5th` Impostor Calibration (`0.363` Floor, `0.50` Cap, `N < 15` Fallback) vs. Fixed or Uncapped Thresholds**
    - **What we chose:** Calibrate `T_low` at the `99.5th` percentile across distinct identity pairs when `N >= 15`, clamp to `[0.363, 0.50]` with an explicit cap warning, compute `T_high = max(T_low + 0.06, 0.44)`, and disclose the one-photo-per-person limitation in **About this run**.
@@ -65,3 +65,13 @@ Every architectural trade-off below reflects an explicit design choice you direc
    - **What we chose:** Vanilla HTML/CSS/ES6 JS served locally under Strict CSP (`default-src 'none'`), paste-folder-path fallback alongside `webkitdirectory`, and an escaped HTML print sheet (`include_thumbs=False` default) using browser Print / Save as PDF.
    - **What we gave up:** Programmatic binary `.pdf` generation and complex frontend build tooling.
    - **Why (Author's Decision):** Zero external runtime dependencies guarantees 100% offline reliability, zero CDN/script leakage, and straightforward evaluation across machines.
+
+7. **Evidence Cards + Three-State Session API (`High-confidence match` / `Needs review` / `Unknown`) vs. Single Match List**
+   - **What we chose:** Add a click-to-open Evidence Card for every detected face displaying the cropped face, proposed reference portrait, runner-up candidate, similarity score, runner-up margin, quality warnings, and a plain-English decision explanation. Expose three distinct session-level states (`High-confidence match`, `Needs review`, `Unknown`) in the demo readiness strip, distinct from the internal matcher states (`Confirmed`/`Likely`/`unknown`). Added a `Confirmed by reviewer` state for human overrides so evaluators can distinguish model suggestions from human decisions.
+   - **What we gave up:** A single uniform status field across all layers (the two-tier naming adds a small translation step in `_build_session_response`).
+   - **Why (Author's Decision):** Office staff need actionable transparency, not raw similarity scores. The card shows exactly why a face is ambiguous and lets a reviewer confirm, reassign, or mark unknown with a single keyboard shortcut. The session-layer naming (`high_confidence_matches`, `needs_review_faces`) makes the demo readiness panel self-documenting for evaluators.
+
+8. **1-to-1 Identity Conflict Demotion vs. Silently Keeping the First Assignment**
+   - **What we chose:** When the same reference identity is proposed for two or more group faces, keep the highest-similarity claimant at its current status and demote all lower-scoring claimants to `Needs review` with a clear reason (`"1-to-1 guard: identity already claimed by a higher-confidence face"`). The reviewer can override this in the Evidence Card.
+   - **What we gave up:** The simpler but overconfident behaviour of assigning one name to multiple faces without alerting the reviewer.
+   - **Why (Author's Decision):** In a real office group photo, two people cannot be the same enrolled individual. Surfacing the conflict explicitly is safer than silently favouring whichever face was processed first.

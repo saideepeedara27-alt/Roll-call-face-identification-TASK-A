@@ -846,3 +846,50 @@ run myself; do not hand-draw a substitute and call it Archify. The diagram must
 show the real modules in this repo. Write the trade-offs section only from
 decisions I made in this chat. Pause before (e).
 ````
+
+
+## PhotoProof Transformation: Product Rename & Evidence Cards (`Step 1000 • 2026-11-25T15:42:21Z`)
+
+````text
+Build an original, polished offline application for Take-home Task A called
+"PhotoProof: Who Is in the Photo?"
+
+Do not copy code, wording, architecture, UI, screenshots, README structure,
+or feature names from any existing Roll Call / face-identification repository.
+This must be a clean implementation with my own decisions documented.
+
+PRODUCT PURPOSE
+PhotoProof helps office staff annotate a single group photo using one folder
+of named reference portraits. It is NOT an attendance clock, surveillance tool,
+or automatic decision-maker. It should make a conservative suggestion, clearly
+expose ambiguity, and let a human correct the final result.
+
+[NON-NEGOTIABLE TASK REQUIREMENTS, CORE EXPERIENCE, TECHNICAL APPROACH,
+QUALITY AND EVALUATION, and DOCUMENTATION sections as specified — all followed
+exactly as stated in the original PDF and product brief.]
+
+UI STYLE
+Warm, calm, professional, and easy for non-technical office staff. Use large
+buttons, clear empty states, keyboard-accessible review controls, and
+high-contrast status chips. Avoid surveillance-themed graphics, dark "security
+dashboard" styling, and attendance language.
+````
+
+## Continue PhotoProof Implementation: All Changes, Tests, Commit & Push (`Step 1010 • 2026-11-25T16:00:00Z`)
+
+````text
+Continue where you stopped. Make all the changes and verify them. Then commit
+to GitHub. Follow the instructions clearly.
+
+For the full chat history file, present it properly: if there is anything
+informal or unclear in the wording, clean it up into professional English.
+Make the commits and follow the assignment instructions precisely.
+````
+
+## Resume and Complete All Remaining Steps (`Step 1020 • 2026-11-25T21:41:57Z`)
+
+````text
+Continue where you stopped. Go through the folder carefully and pick up from
+exactly where the task was left off — SVG export, ARCHITECTURE.md update,
+chat history update, AI_COLLAB.md update, and final GitHub push.
+````

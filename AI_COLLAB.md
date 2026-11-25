@@ -150,6 +150,20 @@ runner-up (Lakshmi Narayan) must be clearly visible in the list row and the
 evidence card, since the top name was wrong.
 ```
 
+### Decision 11: Rename to PhotoProof + Evidence Card as Signature Innovation
+
+- **AI Suggested:** Keep the existing RollCall brand and Studio Inspector layout.
+- **What I Decided:** Rename the product to **PhotoProof** ("Who Is in the Photo?") and redesign the UI around a warm, calm, non-surveillance aesthetic. The signature innovation is a click-to-open **Evidence Card** per face that shows the cropped face, the proposed reference portrait, the second-best candidate, similarity score, runner-up margin, quality warnings (blur, small face, profile angle, occlusion), and a plain-English decision explanation. Added three reviewer actions on each card — Confirm, Choose Another Person, and Mark Unknown — with keyboard shortcuts `j/k` (navigate), `z` (undo).
+- **Why (Author's Decision):** The original brief explicitly required the Evidence Card as the signature innovation. The warm editorial palette avoids the surveillance-dashboard look that office staff would find uncomfortable and reinforces the product's human-in-the-loop framing.
+- **Evidence:** [`static/index.html`](static/index.html), [`static/app.js`](static/app.js), [`static/styles.css`](static/styles.css).
+
+### Decision 12: Two-Layer Status Naming for Transparency
+
+- **AI Suggested:** Use one uniform status field across the matcher and the API response.
+- **What I Decided:** Keep the matcher's internal `Confirmed`/`Likely`/`unknown` states exactly as they are (tested and stable), but translate them to evaluator-readable labels in `_build_session_response`: `Confirmed` → `High-confidence match`, `Likely` → `Needs review`, `unknown` → `Unknown`. Human reviewer overrides produce `Confirmed by reviewer`, which is distinct from the model's auto-`Confirmed`. The demo readiness strip reports `high_confidence_matches`, `needs_review_faces`, and `unknown_faces` counts explicitly.
+- **Why (Author's Decision):** Raw internal status strings like `Confirmed` and `Likely` have specific technical meanings that differ from what a non-technical evaluator or office reviewer needs to see. Separating the two layers prevents confusion between "the model is confident" and "a person confirmed it".
+- **Evidence:** [`rollcall/app.py`](rollcall/app.py) (`_build_session_response`), [`tests/test_api.py`](tests/test_api.py).
+
 ---
 
 ## Full AI Chat History & Export Inventory
@@ -157,11 +171,11 @@ evidence card, since the top name was wrong.
 The Task A brief requires putting your **full AI chat history in the repo, starting from your very first prompt**.
 
 ### Included in Repository
-- **[`docs/chat_history_prompts.md`](docs/chat_history_prompts.md):** Curated chronological log of all **19 engineering and design steering turns** (`Step 0` through `Step 884`, `2026-11-25T11:47:15Z` onward), exported from the session transcript with routine pings, accidental output pastes, and broken external preview links cleaned for readability.
+- **[`docs/chat_history_prompts.md`](docs/chat_history_prompts.md):** Curated chronological log of all **22 engineering and design steering turns** (`Step 0` through `Step 1020`, `2026-11-25T11:47:15Z` onward), exported from the session transcript with routine pings, accidental output pastes, and broken external preview links cleaned for readability.
 
 ### Checklist of External / Prior Chats to Attach Before Submission
 If you used any separate browser/IDE chats *before* pasting the Step 0 master prompt and Checkpoint 1–4 review blocks into this session, export/save those chats into `docs/` (or add their public share links below) before your final push so no earlier prompt is missing:
 
 - [ ] **Prior Planning Chat (if external):** Earlier chat where the Checkpoints 1–4 reviews pasted in Steps 2, 16, 18, 29, and 36 were drafted -> export link / markdown into `docs/`.
 - [ ] **Initial Practice Image Generation Prompts (if created externally):** Prompts used to create the 6 practice portraits in `data/practice/reference/` (turns 142/146 generated via in-session subagent; add any external Gemini image-gen share links if used separately).
-- [x] **Antigravity Main Build & Verification Session (Conversation `a827afa4-b846-444d-9cd4-e7c5a9177d6c`):** Exported at [`docs/chat_history_prompts.md`](docs/chat_history_prompts.md) covering the 19 substantive steering turns (Checkpoints 1–4 + Steps 1–9 + Smoke fixes + `README.md`, `EVAL.md`, `ARCHITECTURE.md`, `RESEARCH.md`, `AI_COLLAB.md`).
+- [x] **Antigravity Main Build & Verification Session (Conversation `a827afa4-b846-444d-9cd4-e7c5a9177d6c`):** Exported at [`docs/chat_history_prompts.md`](docs/chat_history_prompts.md) covering the 22 substantive steering turns (Checkpoints 1–4 + Steps 1–9 + Smoke fixes + `README.md`, `EVAL.md`, `ARCHITECTURE.md`, `RESEARCH.md`, `AI_COLLAB.md` + PhotoProof transformation + Evidence Cards + final docs update).
