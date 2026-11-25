@@ -28,13 +28,20 @@ class RecognitionThresholds:
     must be calibrated against validation data in Checkpoint 5.
     """
 
-    similarity_high: float = 0.42
-    similarity_low: float = 0.30
+    similarity_high: float = 0.44
+    similarity_low: float = 0.363
     runner_up_margin: float = 0.05
+    lookalike_extra_margin: float = 0.05
+    lookalike_pair_threshold: float = 0.42
+    possible_duplicate_threshold: float = 0.55
     min_face_size_px: int = 28
     min_blur_laplacian: float = 35.0
     min_detector_score: float = 0.65
     enable_hungarian: bool = False
+
+    @property
+    def lookalike_margin(self) -> float:
+        return round(self.runner_up_margin + self.lookalike_extra_margin, 4)
 
 
 DEFAULT_THRESHOLDS = RecognitionThresholds()

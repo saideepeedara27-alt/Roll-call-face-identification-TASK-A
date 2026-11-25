@@ -103,12 +103,37 @@ async function refreshIdentities() {
   }
 }
 
+function renderFlaggedPairsHtml(cal) {
+  if (!cal) return "";
+  const dups = cal.possible_duplicate_pairs || [];
+  const looks = cal.lookalike_pairs || [];
+  let html = "";
+  if (dups.length > 0) {
+    html += `<div class="enroll-err-block"><strong>Possible Duplicate Identity (&ge; 0.55) (${dups.length}):</strong><ul>`;
+    for (const p of dups) {
+      html += `<li>${escapeHtml(p.identity_a_name)} &harr; ${escapeHtml(p.identity_b_name)} (sim: ${p.similarity.toFixed(4)})</li>`;
+    }
+    html += `</ul></div>`;
+  }
+  if (looks.length > 0) {
+    html += `<div class="enroll-warn-block"><strong>Lookalike Pairs (extra margin ${cal.lookalike_margin.toFixed(3)} vs base ${cal.base_margin.toFixed(3)}) (${looks.length}):</strong><ul>`;
+    for (const p of looks) {
+      html += `<li>${escapeHtml(p.identity_a_name)} &harr; ${escapeHtml(p.identity_b_name)} (sim: ${p.similarity.toFixed(4)})</li>`;
+    }
+    html += `</ul></div>`;
+  }
+  return html;
+}
+
 function renderEnrollmentSummary(summary) {
   const box = el("enroll-summary");
   box.classList.remove("hidden");
   const warnCount = (summary.warnings || []).length;
   const errCount = (summary.errors || []).length;
-  el("warning-dot").classList.toggle("hidden", warnCount === 0 && errCount === 0);
+  const flaggedCount =
+    ((summary.calibration?.possible_duplicate_pairs || []).length) +
+    ((summary.calibration?.lookalike_pairs || []).length);
+  el("warning-dot").classList.toggle("hidden", warnCount === 0 && errCount === 0 && flaggedCount === 0);
 
   let html = `
     <strong>Enrollment Complete:</strong>
@@ -130,6 +155,7 @@ function renderEnrollmentSummary(summary) {
     }
     html += `</ul></div>`;
   }
+  html += renderFlaggedPairsHtml(summary.calibration);
   box.innerHTML = html;
 
   renderMultiFaceChoices(summary.multiface_pending || []);
@@ -619,6 +645,7 @@ async function openAboutRunDrawer() {
       <div class="about-card"><span>${rawLabel}</span><strong>${rawTxt}</strong></div>
       <div class="about-card"><span>Final T_low (Floor ${cal.floor_value.toFixed(3)}, Cap ${cal.cap_value.toFixed(2)})</span><strong>${cal.final_t_low.toFixed(4)}</strong></div>
       <div class="about-card"><span>Final T_high (Confirmed)</span><strong>${cal.final_t_high.toFixed(4)}</strong></div>
+      <div class="about-card"><span>Margins (Base / Lookalike)</span><strong>${cal.base_margin.toFixed(3)} / ${cal.lookalike_margin.toFixed(3)}</strong></div>
     </div>
     <p class="explain-detail">${escapeHtml(cal.method_summary)}</p>
   `;
@@ -626,6 +653,8 @@ async function openAboutRunDrawer() {
   if (cal.warning) {
     html += `<div class="about-warn">${escapeHtml(cal.warning)}</div>`;
   }
+
+  html += renderFlaggedPairsHtml(cal);
 
   html += `<div class="about-limits"><strong>Calibration Limits (Honest Disclosure):</strong><ul>`;
   for (const lim of cal.limitations || []) {

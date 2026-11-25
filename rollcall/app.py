@@ -374,7 +374,12 @@ def _identify_group_image(
             )
         )
 
-    results = match_group_faces(match_inputs, exemplars, effective_thresholds)
+    results = match_group_faces(
+        match_inputs,
+        exemplars,
+        effective_thresholds,
+        lookalike_pairs=calibration.flagged_pair_set(),
+    )
     serialized_faces = [_serialize_face_result(r) for r in results]
     embeddings_by_face = {
         inp.face_index: inp.embedding for inp in match_inputs

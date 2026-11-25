@@ -86,6 +86,7 @@ def _decide_single_face(
     face: FaceMatchInput,
     ranked: list[CandidateScore],
     thresholds: RecognitionThresholds,
+    lookalike_pairs: set[frozenset[str]] | None = None,
 ) -> FaceMatchResult:
     """Apply quality gate, similarity thresholds, and runner-up margin independently."""
     if not face.quality.passed:
@@ -146,7 +147,17 @@ def _decide_single_face(
             crop_b64=face.crop_b64,
         )
 
-    margin_ok = margin is None or margin >= thresholds.runner_up_margin
+    is_lookalike_pair = bool(
+        lookalike_pairs
+        and top2 is not None
+        and frozenset((top1.identity_id, top2.identity_id)) in lookalike_pairs
+    )
+    required_margin = (
+        thresholds.lookalike_margin
+        if is_lookalike_pair
+        else thresholds.runner_up_margin
+    )
+    margin_ok = margin is None or margin >= required_margin
     if top1.similarity >= thresholds.similarity_high and margin_ok:
         return FaceMatchResult(
             face_index=face.face_index,
@@ -162,7 +173,7 @@ def _decide_single_face(
             decision_reason=(
                 f"Meets high threshold ({top1.similarity:.3f} >= {thresholds.similarity_high:.3f})"
                 + (
-                    f" with margin {margin:.3f} >= {thresholds.runner_up_margin:.3f}."
+                    f" with margin {margin:.3f} >= {required_margin:.3f}."
                     if margin is not None
                     else "."
                 )
@@ -173,10 +184,18 @@ def _decide_single_face(
 
     # Otherwise: borderline similarity or ambiguous runner-up -> Likely (Needs Review)
     if top1.similarity >= thresholds.similarity_high and not margin_ok:
-        reason = (
-            f"Ambiguous runner-up: '{top1.display_name}' ({top1.similarity:.3f}) vs "
-            f"'{top2.display_name}' ({top2.similarity:.3f}), margin {margin:.3f} < {thresholds.runner_up_margin:.3f}."
-        )
+        if is_lookalike_pair:
+            reason = (
+                f"Lookalike guard active: '{top1.display_name}' ({top1.similarity:.3f}) vs "
+                f"'{top2.display_name}' ({top2.similarity:.3f}), margin {margin:.3f} < "
+                f"lookalike margin {required_margin:.3f} (base margin {thresholds.runner_up_margin:.3f})."
+            )
+        else:
+            reason = (
+                f"Ambiguous runner-up: '{top1.display_name}' ({top1.similarity:.3f}) vs "
+                f"'{top2.display_name}' ({top2.similarity:.3f}), margin {margin:.3f} < "
+                f"base margin {thresholds.runner_up_margin:.3f}."
+            )
     else:
         reason = (
             f"Borderline similarity ({top1.similarity:.3f} between {thresholds.similarity_low:.3f} "
@@ -204,6 +223,7 @@ def match_group_faces(
     faces: list[FaceMatchInput],
     exemplars: list[dict],
     thresholds: RecognitionThresholds = DEFAULT_THRESHOLDS,
+    lookalike_pairs: set[frozenset[str]] | None = None,
 ) -> list[FaceMatchResult]:
     """Identify detected group faces using independent thresholds and optional constrained Hungarian."""
     ranked_per_face: list[list[CandidateScore]] = [
@@ -212,7 +232,7 @@ def match_group_faces(
     ]
 
     results = [
-        _decide_single_face(face, ranked, thresholds)
+        _decide_single_face(face, ranked, thresholds, lookalike_pairs=lookalike_pairs)
         for face, ranked in zip(faces, ranked_per_face)
     ]
 
