@@ -41,6 +41,20 @@ This document records the genuine pair-programming decisions, trade-offs, and ev
 
 ---
 
+### Decision 4: UI/UX Design — Interactive Photo Workbench (Checkpoint 4)
+- **AI Suggested:** Concept B (Interactive Photo Workbench / "Studio Inspector") with top status bar, central interactive annotated canvas, synchronized right-hand attendance/face list, and side-by-side Explainability Inspector.
+- **What I Decided:** Approved **Concept B** with practical refinements for non-technical office staff:
+  1. `Likely` matches must be labeled clearly as **Needs Review** and never counted as confirmed attendance automatically.
+  2. `unknown` faces provide **Assign to Person**, **Mark Unknown**, and optional **Enroll Person** actions; manual corrections are recorded in-session without retraining the model.
+  3. **Absent** enrolled people are clearly separated from `unknown` faces.
+  4. **Demo Mode** runs bundled practice data through the exact same recognition pipeline.
+  5. **Wipe All Data** includes a clear confirmation dialog; keyboard navigation (arrow keys + visible focus) is supported without relying on color alone.
+  6. Non-blocking workflow: invalid/warning reference photos do not halt the UI; 100% local assets (zero external fonts, CDN libraries, or analytics).
+- **Why:** Keeps the group photograph as the visual focus while making open-set uncertainty, quality issues, and reference comparisons transparent and usable for office staff.
+- **Evidence:** *Pending* (frontend implementation in `static/`, keyboard accessibility tests, and live demo verification).
+
+---
+
 ## Pasted Chat Excerpts
 *(To be added from genuine session transcripts as development progresses.)*
 

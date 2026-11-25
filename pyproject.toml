@@ -1,0 +1,9 @@
+[project]
+name = "rollcall"
+version = "0.1.0"
+description = "Offline, privacy-first, explainable face identification and attendance intelligence"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
