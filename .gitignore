@@ -1,0 +1,36 @@
+# Python virtual environments & caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local model weights (downloaded during setup, never committed)
+models/
+*.onnx
+*.pb
+*.pth
+
+# Local biometric data, volunteer photos, and private evaluation sets
+data/validation/
+data/eval_holdout/
+data/volunteers/
+data/dev_50/
+
+# Runtime SQLite databases, cached embeddings, and temporary uploads
+*.db
+*.sqlite
+*.sqlite3
+*.npy
+runtime_data/
+uploads/
+exports/
+
+# macOS & IDE artifacts
+.DS_Store
+.vscode/
+.idea/
+*.log
