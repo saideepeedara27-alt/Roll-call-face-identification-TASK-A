@@ -181,7 +181,7 @@ def calibrate_from_pair_similarities(
     floor_bound = raw_val <= SFACE_FLOOR
     cap_hit = raw_val > T_LOW_CAP
     final_t_low = round(min(T_LOW_CAP, max(SFACE_FLOOR, raw_val)), 4)
-    final_t_high = round(max(final_t_low + 0.06, 0.44), 4)
+    final_t_high = round(max(final_t_low + 0.06, base.similarity_high, 0.44), 4)
     lookalikes, possible_dups = _classify_pair_records(pair_records, final_t_low, base)
 
     warning = None

@@ -8,6 +8,8 @@ from rollcall.calibration import (
     calibrate_from_exemplars,
     calibrate_from_pair_similarities,
 )
+from rollcall.image_utils import FaceQualityReport
+from rollcall.matcher import FaceMatchInput, STATUS_CONFIRMED, STATUS_LIKELY, match_group_faces
 
 
 def test_n50_synthetic_similarity_matrix_calibrated_between_floor_and_cap():
@@ -76,8 +78,54 @@ def test_cap_binding_at_050_with_warning():
     assert cal.raw_value == 0.56
     assert cal.cap_hit is True
     assert cal.final_t_low == T_LOW_CAP
+    assert cal.final_t_high == 0.56
+    assert cal.final_t_high > cal.final_t_low
     assert cal.warning is not None
     assert "capped at 0.50" in cal.warning
+
+
+def test_t_high_tracks_above_t_low_050_in_matcher():
+    sims = np.full(1225, 0.20, dtype=np.float64)
+    sims[-15:] = 0.54
+    cal = calibrate_from_pair_similarities(50, sims)
+    assert cal.final_t_low == 0.50
+    assert cal.final_t_high == 0.56
+
+    thresholds = cal.to_thresholds()
+    assert thresholds.similarity_low == 0.50
+    assert thresholds.similarity_high == 0.56
+
+    e_a = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    e_b = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    # Probe 1 has cosine sim 0.52 to Identity A (>= T_low=0.50, < T_high=0.56 -> Likely)
+    p1 = np.array([0.52, 0.0, np.sqrt(1.0 - 0.52**2)], dtype=np.float32)
+    p2 = np.array([0.0, 0.58, np.sqrt(1.0 - 0.58**2)], dtype=np.float32)
+
+    q_ok = FaceQualityReport(
+        width_px=80,
+        height_px=80,
+        min_side_px=80,
+        blur_laplacian=120.0,
+        brightness_mean=120.0,
+        detector_score=0.95,
+        passed=True,
+        reasons=[],
+    )
+    results = match_group_faces(
+        faces=[
+            FaceMatchInput(face_index=1, bbox=(0, 0, 80, 80), quality=q_ok, embedding=p1, crop_b64=""),
+            FaceMatchInput(face_index=2, bbox=(100, 0, 80, 80), quality=q_ok, embedding=p2, crop_b64=""),
+        ],
+        exemplars=[
+            {"identity_id": "id_a", "display_name": "Alice", "photo_id": 1, "original_filename": "Alice.jpg", "embedding": e_a},
+            {"identity_id": "id_b", "display_name": "Bob", "photo_id": 2, "original_filename": "Bob.jpg", "embedding": e_b},
+        ],
+        thresholds=thresholds,
+    )
+    assert results[0].status == STATUS_LIKELY
+    assert results[0].display_name == "Alice"
+    assert results[1].status == STATUS_CONFIRMED
+    assert results[1].display_name == "Bob"
 
 
 def test_calibrate_from_exemplars_multi_photo_grouping():
